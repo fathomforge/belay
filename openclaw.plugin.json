@@ -1,0 +1,74 @@
+{
+  "id": "belay",
+  "name": "Belay",
+  "description": "Spend caps, model-call and tool-call rate limits, and a graceful pause ladder for OpenClaw agents. Local, zero runtime dependencies, no telemetry.",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean", "default": true },
+      "timeZone": {
+        "type": "string",
+        "description": "IANA timezone for daily rollover. Set this to your own zone, not the container's.",
+        "default": "UTC"
+      },
+      "stateFile": {
+        "type": "string",
+        "description": "Absolute path for cross-session totals. Empty disables persistence."
+      },
+      "limits": { "$ref": "#/$defs/limits" },
+      "agents": {
+        "type": "object",
+        "description": "Per-agent overrides, merged over the global limits.",
+        "additionalProperties": { "$ref": "#/$defs/limits" }
+      },
+      "ladder": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cooldownMs": { "type": "number", "exclusiveMinimum": 0, "default": 60000 },
+          "decayMs": { "type": "number", "exclusiveMinimum": 0, "default": 900000 },
+          "renotifyMs": { "type": "number", "exclusiveMinimum": 0, "default": 21600000 },
+          "maxRung": {
+            "type": "string",
+            "enum": ["none", "warn", "blockTool", "endRun", "pause"],
+            "description": "Highest rung the ladder may reach. Set to endRun to opt out of pausing an account.",
+            "default": "pause"
+          }
+        }
+      },
+      "prices": {
+        "type": "object",
+        "description": "Price overrides in USD per million tokens, keyed provider/model.",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["input", "output"],
+          "properties": {
+            "input": { "type": "number", "exclusiveMinimum": 0 },
+            "output": { "type": "number", "exclusiveMinimum": 0 },
+            "cacheRead": { "type": "number", "exclusiveMinimum": 0 },
+            "cacheWrite": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        }
+      }
+    },
+    "$defs": {
+      "limits": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "spendPerRunUsd": { "type": "number", "exclusiveMinimum": 0 },
+          "spendPerHourUsd": { "type": "number", "exclusiveMinimum": 0 },
+          "spendPerDayUsd": { "type": "number", "exclusiveMinimum": 0 },
+          "modelCallsPerMinute": { "type": "number", "exclusiveMinimum": 0 },
+          "toolCallsPerMinute": { "type": "number", "exclusiveMinimum": 0 },
+          "identicalToolCalls": { "type": "number", "exclusiveMinimum": 0 },
+          "toolErrorsPerMinute": { "type": "number", "exclusiveMinimum": 0 },
+          "contextTokensPerCall": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    }
+  }
+}

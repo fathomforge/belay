@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+*.log
+.env
+.env.*
+.DS_Store
+# plugin runtime state written during local testing
+.seatbelt-state/
+
+# Private context: never publish. These carry infrastructure identifiers,
+# personal details and business strategy, and this repo is destined to be public.
+#   openclaw-infra.md  GCP project/VM/zone, container + host paths, OS usernames, chat ids
+#   incident-library   real deployment: agent ids, group ids, member counts
+#   PLAN.md            monetization, financing, personal time budget
+#   CLAUDE.md          personal working preferences and VM references
+# Sanitized public versions can be added deliberately, as new files.
+CLAUDE.md
+KICKOFF_PROMPT.md
+docs/

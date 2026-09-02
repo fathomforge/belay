@@ -1,0 +1,205 @@
+/**
+ * The meter: what has this agent spent and how fast is it moving.
+ *
+ * One `ScopeState` per enforcement scope (an agent, falling back to a session
+ * key when `agentId` is absent -- the SDK marks it optional). All accounting is
+ * in memory and serializable; `store.ts` decides what survives a restart.
+ *
+ * Two deliberate omissions: no tool names or parameters are kept (callers pass a
+ * pre-computed fingerprint), and no prompt or output text exists anywhere in
+ * these structures. The recorder stores decisions, not content.
+ */
+import { DailyTotal, SlidingWindow } from "./windows.ts";
+import { Ladder } from "./ladder.ts";
+import type { LadderConfig } from "./ladder.ts";
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+
+/** Per-run accounting. Runs are bounded so a long-lived gateway cannot leak. */
+type RunState = {
+  usd: number;
+  tokens: number;
+  /** fingerprint -> repeat count, for the identical-call limit. */
+  identical: Map<string, number>;
+  lastSeen: number;
+};
+
+const MAX_TRACKED_RUNS = 200;
+
+export type MeterSnapshot = {
+  runUsd: number;
+  runTokens: number;
+  hourUsd: number;
+  dayUsd: number;
+  modelCallsPerMinute: number;
+  toolCallsPerMinute: number;
+  toolErrorsPerMinute: number;
+  /** Highest repeat count for any single identical call in this run. */
+  maxIdenticalCalls: number;
+  /** Calls we could not price. A non-zero value means the spend caps are partial. */
+  unpricedCalls: number;
+};
+
+export class ScopeState {
+  readonly key: string;
+  readonly ladder: Ladder;
+  #hourUsd = new SlidingWindow(HOUR);
+  #dayUsd: DailyTotal;
+  #modelCalls = new SlidingWindow(MINUTE);
+  #toolCalls = new SlidingWindow(MINUTE);
+  #toolErrors = new SlidingWindow(MINUTE);
+  #runs = new Map<string, RunState>();
+  #unpriced = 0;
+
+  constructor(key: string, timeZone: string, ladder?: LadderConfig, restored?: PersistedScope) {
+    this.key = key;
+    this.#dayUsd = restored
+      ? DailyTotal.fromJSON(timeZone, restored.day)
+      : new DailyTotal(timeZone);
+    // A rung must survive a restart, or an agent could be walked back to "none"
+    // simply by bouncing the gateway -- which is exactly what an operator does
+    // when an agent is misbehaving.
+    this.ladder = restored ? Ladder.fromJSON(restored.ladder, ladder) : new Ladder(ladder);
+  }
+
+  #run(runId: string, now: number): RunState {
+    let run = this.#runs.get(runId);
+    if (!run) {
+      run = { usd: 0, tokens: 0, identical: new Map(), lastSeen: now };
+      this.#runs.set(runId, run);
+      // Map iteration is insertion-ordered, so the first key is the oldest run.
+      // Runs normally end via `endRun`; this only catches ones whose end we missed.
+      while (this.#runs.size > MAX_TRACKED_RUNS) {
+        const oldest = this.#runs.keys().next().value;
+        if (oldest === undefined) break;
+        this.#runs.delete(oldest);
+      }
+    }
+    run.lastSeen = now;
+    return run;
+  }
+
+  /**
+   * Record a completed model call.
+   *
+   * `priceable: false` increments `unpricedCalls` instead of adding $0. The
+   * difference is the whole point: an unpriced call is unknown, not free.
+   */
+  recordUsage(
+    now: number,
+    runId: string,
+    reading: { usd: number; tokens: number; priceable: boolean },
+  ): void {
+    const run = this.#run(runId, now);
+    run.tokens += reading.tokens;
+    if (reading.priceable) {
+      run.usd += reading.usd;
+      this.#hourUsd.add(now, reading.usd);
+      this.#dayUsd.add(now, reading.usd);
+    } else {
+      this.#unpriced += 1;
+    }
+  }
+
+  recordModelCall(now: number): void {
+    this.#modelCalls.add(now);
+  }
+
+  /** `fingerprint` is a hash of tool name + params, never the params themselves. */
+  recordToolCall(now: number, runId: string, fingerprint: string): void {
+    this.#toolCalls.add(now);
+    const run = this.#run(runId, now);
+    const seen = (run.identical.get(fingerprint) ?? 0) + 1;
+    run.identical.set(fingerprint, seen);
+    // A run that legitimately touches thousands of distinct files should not
+    // grow this map without bound; the limit only cares about repeats.
+    if (run.identical.size > 5_000) {
+      const oldest = run.identical.keys().next().value;
+      if (oldest !== undefined) run.identical.delete(oldest);
+    }
+  }
+
+  recordToolError(now: number): void {
+    this.#toolErrors.add(now);
+  }
+
+  snapshot(now: number, runId?: string): MeterSnapshot {
+    const run = runId ? this.#runs.get(runId) : undefined;
+    let maxIdentical = 0;
+    if (run) for (const n of run.identical.values()) if (n > maxIdentical) maxIdentical = n;
+    return {
+      runUsd: run?.usd ?? 0,
+      runTokens: run?.tokens ?? 0,
+      hourUsd: this.#hourUsd.sum(now),
+      dayUsd: this.#dayUsd.total(now),
+      modelCallsPerMinute: this.#modelCalls.count(now),
+      toolCallsPerMinute: this.#toolCalls.count(now),
+      toolErrorsPerMinute: this.#toolErrors.count(now),
+      maxIdenticalCalls: maxIdentical,
+      unpricedCalls: this.#unpriced,
+    };
+  }
+
+  endRun(runId: string): void {
+    this.#runs.delete(runId);
+  }
+
+  /** Only cross-session facts are persisted: the day's spend and the ladder rung. */
+  toJSON(): PersistedScope {
+    return { key: this.key, day: this.#dayUsd.toJSON(), ladder: this.ladder.toJSON() };
+  }
+
+  static fromJSON(data: PersistedScope, timeZone: string, ladder?: LadderConfig): ScopeState {
+    return new ScopeState(data.key, timeZone, ladder, data);
+  }
+}
+
+export type PersistedScope = {
+  key: string;
+  day: { day: string; total: number };
+  ladder: ReturnType<Ladder["toJSON"]>;
+};
+
+/** All scopes on this gateway. */
+export class Meter {
+  readonly timeZone: string;
+  readonly #ladder: LadderConfig | undefined;
+  #scopes = new Map<string, ScopeState>();
+
+  constructor(timeZone: string, ladder?: LadderConfig) {
+    this.timeZone = timeZone;
+    this.#ladder = ladder;
+  }
+
+  /**
+   * `agentId` is optional in the SDK's hook context, so the session key is the
+   * documented fallback. Without one, everything lands in a single shared scope
+   * -- still safe, just coarser than the operator configured.
+   */
+  scope(agentId: string | undefined, sessionKey?: string): ScopeState {
+    const key = agentId ?? sessionKey ?? "unknown";
+    let s = this.#scopes.get(key);
+    if (!s) {
+      s = new ScopeState(key, this.timeZone, this.#ladder);
+      this.#scopes.set(key, s);
+    }
+    return s;
+  }
+
+  scopes(): ScopeState[] {
+    return [...this.#scopes.values()];
+  }
+
+  toJSON(): PersistedScope[] {
+    return this.scopes().map((s) => s.toJSON());
+  }
+
+  load(data: PersistedScope[]): void {
+    for (const entry of data) {
+      if (!entry || typeof entry.key !== "string") continue;
+      const scope = ScopeState.fromJSON(entry, this.timeZone, this.#ladder);
+      this.#scopes.set(entry.key, scope);
+    }
+  }
+}

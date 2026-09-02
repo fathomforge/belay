@@ -1,0 +1,3 @@
+#!/bin/sh
+# Belay: block commits containing secrets or personal data. See scripts/check-secrets.mjs.
+exec node "$(git rev-parse --show-toplevel)/scripts/check-secrets.mjs"

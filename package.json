@@ -1,0 +1,57 @@
+{
+  "name": "@fathomforge/belay",
+  "version": "0.1.0-dev",
+  "private": true,
+  "description": "Belay: local, zero-dependency spend caps, rate limits and a graceful pause ladder for autonomous agents.",
+  "license": "MIT",
+  "author": "fathomforge <carlos@fathomforge.dev>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fathomforge/belay.git"
+  },
+  "homepage": "https://github.com/fathomforge/belay#readme",
+  "bugs": {
+    "url": "https://github.com/fathomforge/belay/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "guardrails",
+    "spend-cap",
+    "rate-limit",
+    "agent-safety"
+  ],
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test 'test/**/*.test.ts'",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "check:secrets": "node scripts/check-secrets.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "5.9.2"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.8.2"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.8.2",
+      "minGatewayVersion": "2026.8.2"
+    }
+  }
+}
