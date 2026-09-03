@@ -43,8 +43,12 @@ const RULES = [
     name: "Telegram chat id",
     // Group ids are large negative integers; user ids are 9-10 digit positives.
     re: /(?<![\w.-])-\d{10,}(?![\w.-])|(?<![\w.$-])\b\d{9,10}\b(?![\w.-])/,
-    // Timestamps, byte counts and token counts are the common false positives.
-    skip: (line) => /(?:tokens?|bytes?|ms\b|Date\.|_\d|\d_|epoch|timestamp|version)/i.test(line),
+    // Timestamps, byte counts, token counts and PRNG constants are the common
+    // false positives. A real chat id does not appear next to arithmetic.
+    skip: (line) =>
+      /(?:tokens?|bytes?|ms\b|Date\.|_\d|\d_|epoch|timestamp|version|seed|random|prng|hash)/i.test(
+        line,
+      ) || /\d\s*[*%^]|[*%^]\s*\d/.test(line),
   },
   {
     name: "absolute home path",
