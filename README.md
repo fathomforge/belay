@@ -223,6 +223,23 @@ each of them:
 - **The provider reported only a token total**, with no input/output split. Those are priced up to
   5× apart, so no honest dollar figure exists.
 
+### Provider support
+
+What a provider reports decides which controls work. Measured on OpenClaw 2026.8.2:
+
+| provider | token usage | request size | use |
+|---|---|---|---|
+| **OpenAI** (`gpt-5.4-nano`) | **✓ reported** | ✗ absent | **Exact dollar caps.** Set prices and go |
+| **Google** (`gemini-3.8-flash`) | ✗ absent | **✓ reported** | **Exact request-size limits** |
+| Anthropic | untested | untested | OpenClaw 2026.8.2 could not complete a request to any Anthropic model in our testing |
+
+**Neither provider gives both signals**, which is why Belay carries both mechanisms and uses
+whichever is available. If your provider reports usage you get exact spend caps; if it reports
+sizes you get exact request-size limits; rate limits work on everything.
+
+Prices come from your existing `models.providers.<id>.models[].cost` — Belay reads it, so you do
+not configure pricing twice. A model priced nowhere is reported as unpriced rather than guessed at.
+
 ### Exact limits vs estimated ones
 
 Belay measures two things very differently, and it is worth knowing which is which:

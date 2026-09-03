@@ -15,6 +15,7 @@ import { Alerter, buildTransports } from "./alerts.ts";
 import { createBelay, guard } from "./belay.ts";
 import type { AgentCtx, Effects, Logger } from "./belay.ts";
 import { parseConfig } from "./config.ts";
+import { pricesFromGatewayConfig } from "./pricing.ts";
 import { Pauser } from "./pauser.ts";
 import type { Dispatch } from "./pauser.ts";
 import { Recorder } from "./recorder.ts";
@@ -61,6 +62,18 @@ export default definePluginEntry({
     if (config.recorder.file) effects.recorder = new Recorder(config.recorder, logger);
     if (config.pause.enabled) {
       effects.pauser = new Pauser(config.pause, resolveDispatch(logger), logger);
+    }
+
+    // Adopt prices the operator already configured for OpenClaw itself, so
+    // dollar caps work without duplicating a price table. Belay's own `prices`
+    // block still takes precedence.
+    const gatewayPrices = pricesFromGatewayConfig(api.config);
+    config.prices = { ...gatewayPrices, ...config.prices };
+    if (Object.keys(gatewayPrices).length > 0) {
+      logger.info(
+        `[${PLUGIN_ID}] adopted ${Object.keys(gatewayPrices).length} model price(s) from ` +
+          "models.providers.*.models[].cost",
+      );
     }
 
     const belay = createBelay(config, logger, Date.now, effects);

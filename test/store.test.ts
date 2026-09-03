@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync, statSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadState, saveStateSync, StateWriter } from "../src/store.ts";
+import { loadState, mergeState, saveStateSync, StateWriter } from "../src/store.ts";
 import type { StoreData } from "../src/store.ts";
 
 function tmp(): string {
@@ -121,4 +121,98 @@ test("stop() flushes and clears the timer", () => {
   assert.deepEqual(loadState(file).data, sample);
   // A second stop must be harmless.
   assert.doesNotThrow(() => writer.stop());
+});
+
+test("concurrent writers converge upward instead of clobbering each other", () => {
+  // Observed in production: the long-running gateway and a separate
+  // `openclaw agent` process each hold their own in-memory meter and flush to
+  // the same file. Last-writer-wins made a daily byte total go backwards from
+  // 756,060 to 648,114 -- silently un-spending money already spent.
+  const gateway: StoreData = {
+    version: 1,
+    scopes: [{
+      key: "main",
+      day: { day: "2026-09-02", total: 0.1381 },
+      dayBytes: { day: "2026-09-02", total: 648_114 },
+      ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 },
+    }],
+  };
+  const cli: StoreData = {
+    version: 1,
+    scopes: [{
+      key: "main",
+      day: { day: "2026-09-02", total: 0.1807 },
+      dayBytes: { day: "2026-09-02", total: 756_060 },
+      ladder: { rung: "warn", lastTriggerAt: 5, lastActionAt: 5 },
+    }],
+  };
+
+  const merged = mergeState(gateway, cli);
+  assert.equal(merged.scopes[0]?.day.total, 0.1807, "spend never goes backwards");
+  assert.equal(merged.scopes[0]?.dayBytes?.total, 756_060);
+  assert.equal(merged.scopes[0]?.ladder.rung, "warn", "the newer action wins");
+
+  // ...and the same in the other order: merging must be order-independent.
+  const other = mergeState(cli, gateway);
+  assert.equal(other.scopes[0]?.day.total, 0.1807);
+  assert.equal(other.scopes[0]?.dayBytes?.total, 756_060);
+});
+
+test("a new calendar day supersedes the old rather than being maxed against it", () => {
+  // Otherwise yesterday's larger total leaks into today and every cap starts
+  // the day already breached.
+  const yesterday: StoreData = {
+    version: 1,
+    scopes: [{
+      key: "main",
+      day: { day: "2026-09-01", total: 9.99 },
+      ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 },
+    }],
+  };
+  const today: StoreData = {
+    version: 1,
+    scopes: [{
+      key: "main",
+      day: { day: "2026-09-02", total: 0.01 },
+      ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 },
+    }],
+  };
+  assert.equal(mergeState(yesterday, today).scopes[0]?.day.total, 0.01);
+  assert.equal(mergeState(today, yesterday).scopes[0]?.day.total, 0.01);
+});
+
+test("scopes only one writer knows about survive the merge", () => {
+  const a: StoreData = {
+    version: 1,
+    scopes: [{ key: "main", day: { day: "d", total: 1 }, ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 } }],
+  };
+  const b: StoreData = {
+    version: 1,
+    scopes: [{ key: "gauntlet", day: { day: "d", total: 2 }, ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 } }],
+  };
+  assert.deepEqual(mergeState(a, b).scopes.map((s) => s.key).sort(), ["gauntlet", "main"]);
+});
+
+test("a flush merges with whatever is already on disk", () => {
+  const file = join(tmp(), "state.json");
+  saveStateSync(file, {
+    version: 1,
+    scopes: [{
+      key: "main",
+      day: { day: "2026-09-02", total: 5 },
+      ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 },
+    }],
+  });
+  // A second process flushes a lower total; the higher one must survive.
+  const writer = new StateWriter(file, () => {});
+  writer.start(() => ({
+    version: 1,
+    scopes: [{
+      key: "main",
+      day: { day: "2026-09-02", total: 1 },
+      ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 },
+    }],
+  }));
+  writer.flush();
+  assert.equal(loadState(file).data?.scopes[0]?.day.total, 5);
 });

@@ -98,6 +98,26 @@ one way should change it, and the table above says which way.
 | Heavy structured output, JSON, large tool schemas | 2.5 |
 | Hashes, ids, base64, embeddings-like payloads | 1.5 |
 
+## Provider support, measured
+
+Which controls are available depends entirely on what the provider reports through the hook. On
+OpenClaw 2026.8.2, tested by driving one real turn per provider and reading Belay's own counters:
+
+| provider / model | `llm_output.usage` | `model_call_ended` bytes |
+|---|---|---|
+| `openai/gpt-5.4-nano` | **reported** — spend rose $0.0213 on a metered turn | absent — byte total did not move |
+| `google/gemini-3.8-flash` | absent — all zeros | **reported** — byte total rose 107,946 |
+| `anthropic/claude-haiku-4-5`, `claude-sonnet-5` | untestable | untestable |
+
+**No provider tested supplies both signals**, and the two we could test supply opposite ones. That
+is the argument for carrying both mechanisms rather than picking one.
+
+The Anthropic rows are untestable rather than negative: OpenClaw 2026.8.2 rejected every request to
+both models with `provider rejected the request schema or tool payload`, on two different agents
+(one with a full tool surface, one with a twenty-item deny list), using a key that authenticated
+successfully. No call reached the model, so its usage reporting is unknown. That looks like an
+upstream integration defect rather than anything to do with Belay.
+
 ## Honest limits
 
 1. **The estimate is order-of-magnitude, not accounting.** Treat an estimated figure as ±50% on

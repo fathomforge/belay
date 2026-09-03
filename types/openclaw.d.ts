@@ -65,6 +65,8 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     version?: string;
     /** This plugin's own `plugins.entries.<id>.config` block, unvalidated. */
     pluginConfig?: Record<string, unknown>;
+    /** The whole gateway config. Belay reads only models.providers.*.models[].cost. */
+    config?: unknown;
     logger: PluginLogger;
     /**
      * Register a typed hook. **This is the one to use.**

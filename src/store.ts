@@ -17,6 +17,60 @@ import type { PersistedScope } from "./meter.ts";
 
 export type StoreData = { version: 1; scopes: PersistedScope[] };
 
+/**
+ * Merge two views of the state, keeping the higher value for each counter.
+ *
+ * More than one process writes this file. A long-running gateway holds its own
+ * in-memory meter, and every `openclaw agent` invocation is a separate process
+ * that loads the plugin, meters its turn and flushes on exit. Without merging,
+ * whichever wrote last simply overwrote the other -- observed in production as a
+ * daily byte total going *backwards* from 756,060 to 648,114, which silently
+ * un-spends money an agent had already spent.
+ *
+ * Daily totals only increase within a day, so taking the maximum converges both
+ * writers upward and never invents spend. A newer calendar day always replaces
+ * an older one. For the ladder, the most recent action wins, so an escalation
+ * recorded by one process is not undone by another that never saw it.
+ */
+export function mergeState(a: StoreData | undefined, b: StoreData): StoreData {
+  if (!a) return b;
+  const byKey = new Map<string, PersistedScope>();
+  for (const scope of a.scopes) if (scope?.key) byKey.set(scope.key, scope);
+
+  for (const incoming of b.scopes) {
+    if (!incoming?.key) continue;
+    const existing = byKey.get(incoming.key);
+    if (!existing) {
+      byKey.set(incoming.key, incoming);
+      continue;
+    }
+    byKey.set(incoming.key, {
+      key: incoming.key,
+      day: mergeDaily(existing.day, incoming.day),
+      ...(existing.dayBytes || incoming.dayBytes
+        ? { dayBytes: mergeDaily(existing.dayBytes, incoming.dayBytes) }
+        : {}),
+      ladder:
+        (incoming.ladder?.lastActionAt ?? 0) >= (existing.ladder?.lastActionAt ?? 0)
+          ? incoming.ladder
+          : existing.ladder,
+    });
+  }
+  return { version: 1, scopes: [...byKey.values()] };
+}
+
+function mergeDaily(
+  a: { day: string; total: number } | undefined,
+  b: { day: string; total: number } | undefined,
+): { day: string; total: number } {
+  const left = a ?? { day: "", total: 0 };
+  const right = b ?? { day: "", total: 0 };
+  // A later calendar day supersedes an earlier one rather than being maxed
+  // against it, or yesterday's larger total would leak into today.
+  if (left.day !== right.day) return left.day > right.day ? left : right;
+  return { day: left.day, total: Math.max(left.total, right.total) };
+}
+
 export type StoreResult = { data: StoreData | undefined; error?: string };
 
 const EMPTY: StoreData = { version: 1, scopes: [] };
@@ -114,7 +168,10 @@ export class StateWriter {
       this.#onError(`state snapshot failed: ${String(err)}`);
       return;
     }
-    const error = saveStateSync(this.file, data);
+    // Read-modify-write: another process may have advanced the file since our
+    // last flush, and its progress must not be discarded.
+    const merged = mergeState(loadState(this.file).data, data);
+    const error = saveStateSync(this.file, merged);
     if (error) this.#onError(error);
   }
 

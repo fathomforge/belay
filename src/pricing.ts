@@ -104,3 +104,46 @@ export function costOf(usage: Usage, price: ModelPrice): number {
 export function totalTokens(usage: Usage): number {
   return usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 }
+
+/**
+ * Read model prices from the gateway's own config.
+ *
+ * OpenClaw already has a place for this -- `models.providers.<id>.models[].cost`
+ * -- and an operator who filled it in should not have to repeat themselves in
+ * Belay's config. Anything set in Belay's own `prices` still wins, and a model
+ * that is priced in neither place is reported as unpriced rather than guessed at.
+ *
+ * Shape is validated defensively: this is operator-authored config reached
+ * through an SDK surface, so a surprising value must degrade to "no price",
+ * never to a wrong number or a crash.
+ */
+export function pricesFromGatewayConfig(config: unknown): Record<string, ModelPrice> {
+  const out: Record<string, ModelPrice> = {};
+  const providers = (config as { models?: { providers?: unknown } })?.models?.providers;
+  if (!providers || typeof providers !== "object") return out;
+
+  for (const [providerId, provider] of Object.entries(providers as Record<string, unknown>)) {
+    const models = (provider as { models?: unknown })?.models;
+    if (!Array.isArray(models)) continue;
+    for (const entry of models) {
+      const id = (entry as { id?: unknown })?.id;
+      const cost = (entry as { cost?: unknown })?.cost;
+      if (typeof id !== "string" || !cost || typeof cost !== "object") continue;
+
+      const c = cost as Record<string, unknown>;
+      const num = (v: unknown): number | undefined =>
+        typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
+      const input = num(c["input"]);
+      const output = num(c["output"]);
+      if (input === undefined || output === undefined) continue;
+
+      const price: ModelPrice = { input, output };
+      const cacheRead = num(c["cacheRead"]);
+      const cacheWrite = num(c["cacheWrite"]);
+      if (cacheRead !== undefined) price.cacheRead = cacheRead;
+      if (cacheWrite !== undefined) price.cacheWrite = cacheWrite;
+      out[priceKey(providerId, id)] = price;
+    }
+  }
+  return out;
+}
