@@ -49,11 +49,12 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     contextTokenBudget?: number;
   };
 
-  /** Hook registration options (`priority` higher runs first). */
-  export type OpenClawPluginHookOptions = {
+  /** Options for `api.on`, the typed hook registrar. */
+  export type PluginHookRegistrationOptions = {
     priority?: number;
-    timeoutMs?: number;
     registrationId?: string;
+    timeoutMs?: number;
+    /** `before_tool_call` / `after_tool_call` only: canonical tool ids. */
     matcher?: unknown;
   };
 
@@ -65,10 +66,21 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     /** This plugin's own `plugins.entries.<id>.config` block, unvalidated. */
     pluginConfig?: Record<string, unknown>;
     logger: PluginLogger;
-    registerHook: (
-      events: string | string[],
+    /**
+     * Register a typed hook. **This is the one to use.**
+     *
+     * `api.registerHook` also exists and is deliberately NOT declared here.
+     * Typed hook events (`llm_output`, `before_tool_call`, `before_agent_run`
+     * and friends) are dispatched by the typed hook runner only, so a
+     * `registerHook` registration for one of them is accepted, logged as
+     * ignored, and never invoked -- the plugin loads, reports itself active,
+     * and silently does nothing. Found by installing on a real gateway; it
+     * typechecked and every unit test passed.
+     */
+    on: (
+      hookName: string,
       handler: (event: never, ctx: never) => unknown,
-      opts?: OpenClawPluginHookOptions,
+      opts?: PluginHookRegistrationOptions,
     ) => void;
   };
 

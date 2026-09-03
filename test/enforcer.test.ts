@@ -17,6 +17,7 @@ function snap(over: Partial<MeterSnapshot> = {}): MeterSnapshot {
     toolErrorsPerMinute: 0,
     maxIdenticalCalls: 0,
     unpricedCalls: 0,
+    unmeteredCalls: 0,
     ...over,
   };
 }

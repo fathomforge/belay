@@ -39,6 +39,8 @@ export type MeterSnapshot = {
   maxIdenticalCalls: number;
   /** Calls we could not price. A non-zero value means the spend caps are partial. */
   unpricedCalls: number;
+  /** Calls that reported no usage at all -- see `recordMissingUsage`. */
+  unmeteredCalls: number;
 };
 
 export class ScopeState {
@@ -51,6 +53,7 @@ export class ScopeState {
   #toolErrors = new SlidingWindow(MINUTE);
   #runs = new Map<string, RunState>();
   #unpriced = 0;
+  #unmetered = 0;
 
   constructor(key: string, timeZone: string, ladder?: LadderConfig, restored?: PersistedScope) {
     this.key = key;
@@ -102,6 +105,18 @@ export class ScopeState {
     }
   }
 
+  /**
+   * A model call that reported no usage object at all.
+   *
+   * Tracked separately from `unpriced` because it is a worse failure: an
+   * unpriced call at least contributes tokens, while this one is completely
+   * invisible to every spend cap. Found on a live gateway, where the first turn
+   * metered $0.00 in total silence.
+   */
+  recordMissingUsage(): void {
+    this.#unmetered += 1;
+  }
+
   recordModelCall(now: number): void {
     this.#modelCalls.add(now);
   }
@@ -138,6 +153,7 @@ export class ScopeState {
       toolErrorsPerMinute: this.#toolErrors.count(now),
       maxIdenticalCalls: maxIdentical,
       unpricedCalls: this.#unpriced,
+      unmeteredCalls: this.#unmetered,
     };
   }
 
@@ -153,6 +169,18 @@ export class ScopeState {
   static fromJSON(data: PersistedScope, timeZone: string, ladder?: LadderConfig): ScopeState {
     return new ScopeState(data.key, timeZone, ladder, data);
   }
+}
+
+/**
+ * Recover an agent id from a session key such as `agent:main:main`.
+ *
+ * Returns undefined for any shape we do not recognise, so an unexpected format
+ * degrades to session-key scoping rather than to a confidently wrong bucket.
+ */
+export function agentIdFromSessionKey(sessionKey: string | undefined): string | undefined {
+  if (!sessionKey) return undefined;
+  const match = /^agent:([^:]+):/.exec(sessionKey);
+  return match?.[1];
 }
 
 export type PersistedScope = {
@@ -173,12 +201,17 @@ export class Meter {
   }
 
   /**
-   * `agentId` is optional in the SDK's hook context, so the session key is the
-   * documented fallback. Without one, everything lands in a single shared scope
-   * -- still safe, just coarser than the operator configured.
+   * `agentId` is optional in the SDK's hook context, so a fallback is required.
+   *
+   * The naive fallback -- use the session key -- turned out to be wrong on a
+   * live gateway: some hooks supply `agentId` ("main") and others only supply
+   * `sessionKey` ("agent:main:main"), so a single agent was metered under two
+   * separate keys and each saw roughly half its own spend. Session keys for
+   * agent runs embed the agent id, so recover it rather than starting a second
+   * bucket. Anything unrecognised still falls back to the raw session key.
    */
   scope(agentId: string | undefined, sessionKey?: string): ScopeState {
-    const key = agentId ?? sessionKey ?? "unknown";
+    const key = agentId ?? agentIdFromSessionKey(sessionKey) ?? sessionKey ?? "unknown";
     let s = this.#scopes.get(key);
     if (!s) {
       s = new ScopeState(key, this.timeZone, this.#ladder);

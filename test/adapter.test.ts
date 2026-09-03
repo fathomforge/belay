@@ -5,7 +5,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createBelay, guard } from "../src/belay.ts";
+import { createBelay, describeShape, guard, usageFrom } from "../src/belay.ts";
 import { parseConfig } from "../src/config.ts";
 import { Pauser } from "../src/pauser.ts";
 import type { AlertEvent, Alerter } from "../src/alerts.ts";
@@ -89,7 +89,7 @@ test("an unknown model is counted as unpriced, not as free, and warns once", () 
   // every turn in practice. Also once, no matter how many turns.
   belay.beforeAgentRun(ctx);
   belay.beforeAgentRun(ctx);
-  assert.equal(logger.lines.filter((l) => l.includes("could not be priced")).length, 1);
+  assert.equal(logger.lines.filter((l) => l.includes("unpriced and")).length, 1);
 });
 
 test("a price override is used ahead of the bundled table", () => {
@@ -474,4 +474,62 @@ test("observe mode records what it would have done", () => {
   belay.beforeAgentRun({ agentId: "main", runId: "r1" });
   assert.equal(records[0]?.action, "logged");
   assert.match(records[0]?.reason ?? "", /observe mode: would have been endRun/);
+});
+
+test("describeShape reports field names and types, never values", () => {
+  const shape = describeShape({
+    provider: "google",
+    prompt: "something private the user said",
+    assistantTexts: ["a reply nobody else should see"],
+    usage: { input: 5 },
+    n: 1,
+    flag: true,
+    nothing: null,
+  });
+  assert.match(shape, /provider:string/);
+  assert.match(shape, /usage:object/);
+  assert.match(shape, /assistantTexts:array\[1\]/);
+  // The whole point: the diagnostic must be safe to print in a shared log.
+  assert.equal(shape.includes("private"), false);
+  assert.equal(shape.includes("nobody"), false);
+});
+
+test("usage is read from the assistant transcript entry when the hook field is empty", () => {
+  // Real behaviour on a live gateway: llm_output.usage was undefined for Gemini
+  // while the transcript entry carried the counts.
+  const { config } = parseConfig({ limits: { spendPerDayUsd: 100 } });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  belay.llmOutput(
+    { agentId: "main", runId: "r1" },
+    {
+      provider: "google",
+      model: "gemini-3.8-flash",
+      lastAssistant: { usage: { input: 1_000_000, output: 0 } },
+      runId: "r1",
+    },
+  );
+  assert.equal(belay.meter.scope("main").snapshot(T0, "r1").runUsd, 0.75);
+});
+
+test("the hook's own usage field still wins when present", () => {
+  const { config } = parseConfig({ limits: { spendPerDayUsd: 100 } });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  belay.llmOutput(
+    { agentId: "main", runId: "r1" },
+    {
+      provider: "google",
+      model: "gemini-3.8-flash",
+      usage: { input: 2_000_000 },
+      lastAssistant: { usage: { input: 1_000_000 } },
+      runId: "r1",
+    },
+  );
+  assert.equal(belay.meter.scope("main").snapshot(T0, "r1").runUsd, 1.5);
+});
+
+test("a junk transcript entry degrades to no usage rather than a wrong number", () => {
+  assert.equal(usageFrom(undefined), undefined);
+  assert.equal(usageFrom("a string"), undefined);
+  assert.equal(usageFrom({ usage: "not an object" }), undefined);
+  assert.deepEqual(usageFrom({ usage: { input: 5 } }), { input: 5 });
 });

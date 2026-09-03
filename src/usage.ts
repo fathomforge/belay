@@ -28,22 +28,46 @@ export type UsageReading = {
 
 const ZERO: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
-/** Non-negative finite number, or 0. Providers have shipped nulls and NaNs here. */
-function num(v: number | undefined): number {
-  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
+/**
+ * Field-name aliases for each token bucket.
+ *
+ * OpenClaw's own `llm_output.usage` uses the short names, but the assistant
+ * transcript entry and several provider payloads use `*Tokens` or snake_case.
+ * Belay reads whichever is present rather than requiring one shape: a meter
+ * that only understands one spelling reports $0.00 on the others, which is the
+ * failure this whole module exists to prevent. Verified against a live gateway.
+ */
+const ALIASES = {
+  input: ["input", "inputTokens", "promptTokens", "input_tokens", "prompt_tokens"],
+  output: ["output", "outputTokens", "completionTokens", "output_tokens", "completion_tokens"],
+  cacheRead: ["cacheRead", "cacheReadTokens", "cache_read", "cache_read_input_tokens"],
+  cacheWrite: ["cacheWrite", "cacheWriteTokens", "cache_write", "cache_creation_input_tokens"],
+  total: ["total", "totalTokens", "total_tokens"],
+} as const;
+
+/** First alias present with a usable number, else 0. */
+function pick(raw: Record<string, unknown>, names: readonly string[]): number {
+  for (const name of names) {
+    const v = raw[name];
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+  }
+  return 0;
 }
 
 export function readUsage(raw: HookUsage | undefined): UsageReading {
-  if (!raw) return { usage: { ...ZERO }, tokens: 0, present: false, priceable: false };
+  if (!raw || typeof raw !== "object") {
+    return { usage: { ...ZERO }, tokens: 0, present: false, priceable: false };
+  }
+  const src = raw as unknown as Record<string, unknown>;
 
   const usage: Usage = {
-    input: num(raw.input),
-    output: num(raw.output),
-    cacheRead: num(raw.cacheRead),
-    cacheWrite: num(raw.cacheWrite),
+    input: pick(src, ALIASES.input),
+    output: pick(src, ALIASES.output),
+    cacheRead: pick(src, ALIASES.cacheRead),
+    cacheWrite: pick(src, ALIASES.cacheWrite),
   };
   const split = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-  const total = num(raw.total);
+  const total = pick(src, ALIASES.total);
 
   // A `total` with no split is real: some providers report only an aggregate.
   if (split === 0 && total > 0) {

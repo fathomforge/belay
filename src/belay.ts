@@ -100,7 +100,8 @@ export function createBelay(
     if (spendCapsAreBlind(snapshot, limits) && !blindnessReported.has(scope.key)) {
       blindnessReported.add(scope.key);
       logger.warn(
-        `[${PLUGIN_ID}] ${scope.key}: ${snapshot.unpricedCalls} model call(s) could not be priced, ` +
+        `[${PLUGIN_ID}] ${scope.key}: ${snapshot.unpricedCalls} unpriced and ` +
+          `${snapshot.unmeteredCalls} unmetered model call(s), ` +
           "so spend caps for this agent are incomplete. Set plugins.entries.belay.config.prices " +
           "or models.providers.*.models[].cost.",
       );
@@ -212,18 +213,49 @@ export function createBelay(
      */
     llmOutput(
       ctx: AgentCtx,
-      event: { provider?: string; model?: string; usage?: HookUsage; runId?: string },
+      event: {
+        provider?: string;
+        model?: string;
+        usage?: HookUsage;
+        lastAssistant?: unknown;
+        runId?: string;
+      },
     ): void {
-      const reading = readUsage(event.usage);
-      if (!reading.present) return;
+      // On a real gateway `usage` came back undefined for Gemini while the
+      // assistant transcript entry carried the counts, so fall back to it.
+      // Both shapes are the same normalized bucket names.
+      const reading = readUsage(event.usage ?? usageFrom(event.lastAssistant));
+      const scopeForUsage = meter.scope(ctx.agentId, ctx.sessionKey);
+      if (!reading.present) {
+        // Silence here would be the worst outcome: every spend cap is inert and
+        // nothing says so. Count it, and say it once per model.
+        scopeForUsage.recordMissingUsage();
+        const key = `missing-usage:${event.provider ?? "?"}/${event.model ?? "?"}`;
+        if (!blindnessReported.has(key)) {
+          blindnessReported.add(key);
+          logger.warn(
+            `[${PLUGIN_ID}] ${event.provider ?? "?"}/${event.model ?? "?"} reported no token usage; ` +
+              "spend caps cannot see these calls. Rate limits still apply.",
+          );
+          // Field *names* and value *types* only -- never values. Enough to find
+          // where a provider hid its token counts, without touching content.
+          logger.warn(`[${PLUGIN_ID}] llm_output shape: ${describeShape(event)}`);
+          logger.warn(`[${PLUGIN_ID}] lastAssistant shape: ${describeShape(event.lastAssistant)}`);
+          // Token counts and a cost object: numbers only, no content, so this is
+          // safe to print while diagnosing a provider that meters as zero.
+          logger.warn(
+            `[${PLUGIN_ID}] transcript usage values: ${JSON.stringify(usageFrom(event.lastAssistant))}`,
+          );
+        }
+        return;
+      }
       const price = reading.priceable
         ? resolvePrice(event.provider ?? "", event.model ?? "", {
             overrides: config.prices,
             now: now(),
           })
         : undefined;
-      const scope = meter.scope(ctx.agentId, ctx.sessionKey);
-      scope.recordUsage(now(), event.runId ?? ctx.runId ?? "unknown", {
+      scopeForUsage.recordUsage(now(), event.runId ?? ctx.runId ?? "unknown", {
         usd: price ? costOf(reading.usage, price) : 0,
         tokens: reading.tokens,
         // An unknown model is as unpriceable as a missing split: both must count
@@ -261,4 +293,39 @@ export function guard<T>(logger: Logger, hook: string, fn: () => T, fallback?: T
     logger.error(`[${PLUGIN_ID}] ${hook} failed, passing through: ${String(err)}`);
     return fallback;
   }
+}
+
+/**
+ * Describe an object's field names and value types, never its values.
+ *
+ * A provider that reports usage under a name we do not expect makes every spend
+ * cap silently inert, and the only way to find it is to look at the payload. But
+ * `llm_output` also carries `prompt` and `assistantTexts`, so this must never
+ * print a value -- only the shape, one level deep.
+ */
+export function describeShape(value: unknown, depth = 0): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `array[${value.length}]`;
+  if (typeof value !== "object") return typeof value;
+  if (depth >= 1) return "object";
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    parts.push(`${k}:${describeShape(v, depth + 1)}`);
+  }
+  return `{${parts.join(", ")}}`;
+}
+
+/**
+ * Pull a usage object off a transcript-shaped value, if it has one.
+ *
+ * Deliberately narrow: it reads exactly one property named `usage` and hands it
+ * to the same validator as the hook's own field, so a surprising shape degrades
+ * to "no usage" rather than to a wrong number. It never touches any other
+ * property, so message content stays untouched.
+ */
+export function usageFrom(value: unknown): HookUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const usage = (value as { usage?: unknown }).usage;
+  if (!usage || typeof usage !== "object") return undefined;
+  return usage as HookUsage;
 }

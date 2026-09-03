@@ -131,5 +131,8 @@ export function spendCapsAreBlind(snapshot: MeterSnapshot, limits: Limits): bool
     limits.spendPerRunUsd !== undefined ||
     limits.spendPerHourUsd !== undefined ||
     limits.spendPerDayUsd !== undefined;
-  return hasSpendCap && snapshot.unpricedCalls > 0;
+  // Either failure blinds a spend cap, but they blind it differently: an
+  // unpriced call still moves token counters, while an unmetered one is
+  // completely invisible.
+  return hasSpendCap && (snapshot.unpricedCalls > 0 || snapshot.unmeteredCalls > 0);
 }

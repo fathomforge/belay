@@ -81,38 +81,50 @@ export default definePluginEntry({
       writer.start(() => ({ version: 1, scopes: belay.meter.toJSON() }));
       // `session_end` allows 2 seconds TOTAL across every session and handler,
       // so this flush must stay synchronous and small.
-      api.registerHook("session_end", () => {
+      api.on("session_end", () => {
         guard(logger, "session_end", () => writer.flush());
       });
     }
 
-    api.registerHook("before_agent_run", (_event: unknown, ctx: AgentCtx) =>
+    api.on("before_agent_run", (_event: unknown, ctx: AgentCtx) =>
       guard(logger, "before_agent_run", () => belay.beforeAgentRun(ctx), {
         outcome: "pass" as const,
       }),
     );
 
-    api.registerHook(
+    api.on(
       "before_tool_call",
       (event: { toolName: string; params?: unknown }, ctx: AgentCtx) =>
         guard(logger, "before_tool_call", () => belay.beforeToolCall(ctx, event), {}),
     );
 
-    api.registerHook("after_tool_call", (event: { error?: unknown }, ctx: AgentCtx) => {
-      guard(logger, "after_tool_call", () => belay.afterToolCall(ctx, event));
-    });
+    api.on(
+      "after_tool_call",
+      (event: { error?: unknown }, ctx: AgentCtx) => {
+        guard(logger, "after_tool_call", () => belay.afterToolCall(ctx, event));
+      },
+    );
 
-    api.registerHook("model_call_started", (_event: unknown, ctx: AgentCtx) => {
-      guard(logger, "model_call_started", () => belay.modelCallStarted(ctx));
-    });
+    api.on(
+      "model_call_started",
+      (_event: unknown, ctx: AgentCtx) => {
+        guard(logger, "model_call_started", () => belay.modelCallStarted(ctx));
+      },
+    );
 
-    api.registerHook("llm_output", (event: { usage?: HookUsage }, ctx: AgentCtx) => {
-      guard(logger, "llm_output", () => belay.llmOutput(ctx, event));
-    });
+    api.on(
+      "llm_output",
+      (event: { usage?: HookUsage }, ctx: AgentCtx) => {
+        guard(logger, "llm_output", () => belay.llmOutput(ctx, event));
+      },
+    );
 
-    api.registerHook("agent_end", (_event: unknown, ctx: AgentCtx) => {
-      guard(logger, "agent_end", () => belay.agentEnd(ctx));
-    });
+    api.on(
+      "agent_end",
+      (_event: unknown, ctx: AgentCtx) => {
+        guard(logger, "agent_end", () => belay.agentEnd(ctx));
+      },
+    );
 
     logger.info(
       `[${PLUGIN_ID}] active: caps=${JSON.stringify(config.limits)} tz=${config.timeZone} ` +

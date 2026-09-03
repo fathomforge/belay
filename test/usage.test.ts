@@ -60,3 +60,30 @@ test("incident #4: an hourly 174k-token heartbeat is visible even without a pric
   for (let hour = 0; hour < 24; hour += 1) tokens += readUsage({ total: 174_000 }).tokens;
   assert.equal(tokens, 4_176_000);
 });
+
+test("token buckets are read under any of their known field names", () => {
+  // OpenClaw's llm_output uses the short names; the transcript entry and several
+  // providers use *Tokens or snake_case. A meter that knows one spelling reports
+  // $0.00 on the others.
+  const camel = readUsage({ inputTokens: 100, outputTokens: 50 } as never);
+  assert.deepEqual(camel.usage, { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 });
+  assert.equal(camel.priceable, true);
+
+  const snake = readUsage({ input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 2 } as never);
+  assert.deepEqual(snake.usage, { input: 10, output: 5, cacheRead: 2, cacheWrite: 0 });
+
+  const openai = readUsage({ promptTokens: 7, completionTokens: 3 } as never);
+  assert.deepEqual(openai.usage, { input: 7, output: 3, cacheRead: 0, cacheWrite: 0 });
+
+  assert.equal(readUsage({ totalTokens: 999 } as never).tokens, 999);
+});
+
+test("the canonical short names still win when both are present", () => {
+  const r = readUsage({ input: 100, inputTokens: 999 } as never);
+  assert.equal(r.usage.input, 100);
+});
+
+test("a non-object usage value is not usage", () => {
+  assert.equal(readUsage("nope" as never).present, false);
+  assert.equal(readUsage(42 as never).present, false);
+});

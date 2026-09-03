@@ -111,3 +111,33 @@ test("Meter.load ignores junk entries rather than throwing", () => {
   m.load([null, { nope: true }, undefined] as never);
   assert.equal(m.scopes().length, 0);
 });
+
+test("an agent is one scope whether or not the hook supplied agentId", () => {
+  // Found on a live gateway: some hooks give `agentId` ("main"), others only
+  // give `sessionKey` ("agent:main:main"). Metering them separately split one
+  // agent's spend across two buckets, so neither reached its cap.
+  const m = new Meter("UTC");
+  const t = Date.parse("2026-09-02T10:00:00Z");
+  m.scope("main", "agent:main:main").recordUsage(t, "r1", { usd: 1, tokens: 10, priceable: true });
+  m.scope(undefined, "agent:main:main").recordUsage(t, "r1", { usd: 1, tokens: 10, priceable: true });
+
+  assert.equal(m.scopes().length, 1, "one agent, one scope");
+  assert.equal(m.scope("main").snapshot(t).dayUsd, 2);
+});
+
+test("an unrecognised session key still gets its own scope rather than a wrong one", () => {
+  const m = new Meter("UTC");
+  assert.equal(m.scope(undefined, "telegram:12345").key, "telegram:12345");
+  assert.equal(m.scope(undefined, undefined).key, "unknown");
+});
+
+test("a model call with no usage at all is counted, not silently ignored", () => {
+  const s = new ScopeState("main", "UTC");
+  const t = Date.parse("2026-09-02T10:00:00Z");
+  s.recordMissingUsage();
+  s.recordMissingUsage();
+  const snap = s.snapshot(t, "r1");
+  assert.equal(snap.unmeteredCalls, 2);
+  // Distinct from unpriced: those at least contribute tokens.
+  assert.equal(snap.unpricedCalls, 0);
+});

@@ -46,6 +46,9 @@ Belay is the layer that notices and steps in — gradually.
 openclaw plugins install npm:@fathomforge/belay
 ```
 
+Installing from a local path or an unreviewed source additionally needs
+`--force --accept-capabilities`; OpenClaw asks for explicit consent before loading it.
+
 Then add to `openclaw.json`:
 
 ```json
@@ -66,6 +69,18 @@ Then add to `openclaw.json`:
   }
 }
 ```
+
+**Grant conversation-hook access** — Belay cannot meter anything without it:
+
+```bash
+openclaw config patch --stdin <<'JSON'
+{ plugins: { entries: { belay: { hooks: { allowConversationAccess: true } } } } }
+JSON
+```
+
+Non-bundled plugins are blocked from typed conversation hooks unless you opt in. Without this the
+plugin loads, reports itself active, and silently does nothing — you'll see
+`typed hook "llm_output" blocked because ...` in the gateway log.
 
 Restart the gateway, then **verify — don't assume**:
 
@@ -200,15 +215,22 @@ Belay computes cost from token counts using a small bundled price table, because
 records dollar figures when you've configured `models.providers.*.models[].cost` — and most people
 haven't. A meter that trusted those numbers would report $0.00 and enforce nothing.
 
-Two situations produce an honest "I don't know" rather than a wrong number, and Belay tells you
-about both:
+Three situations produce an honest "I don't know" rather than a wrong number, and Belay warns about
+each of them:
 
-- **The model isn't in the table** and you haven't set a price override.
+- **Your provider reports no token usage at all.** This is common — check with
+  `openclaw status --usage`. If it says *"no provider usage available"*, then no spend cap can
+  work, for Belay or anything else, because there are no numbers to cap. Belay will log
+  `<provider>/<model> reported no token usage; spend caps cannot see these calls.`
+- **The model isn't in the price table** and you haven't set a `prices` override.
 - **The provider reported only a token total**, with no input/output split. Those are priced up to
   5× apart, so no honest dollar figure exists.
 
-In both cases the tokens are still metered and your rate limits still work — but you'll be warned
-that your spend caps are incomplete. Fix it with a `prices` override.
+> [!IMPORTANT]
+> **Rate limits do not depend on usage reporting.** Model-call storms, tool-call rates, identical
+> repeated calls and error storms are all counted directly, so they work even when your provider
+> reports nothing. If your gateway has no usage data, those are still worth having — they're what
+> catches a runaway loop, which is the failure that costs the most.
 
 ## Requirements
 
