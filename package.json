@@ -60,5 +60,10 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
   }
 }
