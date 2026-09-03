@@ -229,23 +229,35 @@ gateway, where `llm_output.usage` was `undefined` and the transcript entry's usa
 A spend cap with no numbers is inert, so Belay falls back to **estimating cost from request size**.
 
 `model_call_ended` carries `requestPayloadBytes` and `responseStreamBytes` — the *size* of the
-request and response, never their content — and roughly 4 bytes of JSON payload corresponds to one
-token. Belay converts, prices the result normally, and labels every figure it produces:
+request and response, never their content. Belay converts bytes to tokens, prices the result
+normally, and labels every figure it produces:
 
 ```
 this run has spent $0.62, reaching the $0.50 cap (estimated from request size)
 ```
 
+**How accurate is that?** We measured it against Gemini's own tokenizer across ten content types.
+The honest answer: **bytes do not determine tokens.** The true ratio ranges from 1.39 bytes/token
+for identifier-heavy text to 7.88 for varied English prose — a 5.7× spread — so no single divisor
+is accurate for everything. Treat an estimated figure as **±50% on realistic content**, and set
+estimated caps with margin accordingly.
+
+The full experiment, the raw data, the arithmetic and the reasoning behind the chosen default are
+published in **[docs/CALIBRATION.md](docs/CALIBRATION.md)**, with the scripts in
+[`tools/calibration/`](tools/calibration) so you can rerun it yourself.
+
 Details worth knowing:
 
 - **It only estimates models it has actually seen report nothing.** A model that reports real usage
   is trusted permanently and is never estimated on top of, so nothing is ever double-counted.
-- **It errs high.** JSON payloads carry structural overhead, so the byte count exceeds the true
-  token count. A cap that trips slightly early is a much cheaper mistake than one that never trips.
 - **It reads two integers of transport metadata.** No prompt, no reply, no tool parameters, and no
   extra hook permissions.
-- Tune with `estimation.bytesPerToken` (default 4), or turn it off with
-  `"estimation": { "enabled": false }` and accept that spend caps will be inert on such providers.
+- **The default divisor (`estimation.bytesPerToken`, 3.5) is calibrated for
+  `google/gemini-3.8-flash`.** Every provider has its own tokenizer, so it does not transfer. If
+  your traffic skews to prose, raise it toward 5; to JSON and ids, lower it toward 2.5.
+- Turn it off with `"estimation": { "enabled": false }` and accept that spend caps are inert on
+  providers that report nothing.
+- **Rate limits involve no estimation at all** and are exact on every provider.
 
 > [!IMPORTANT]
 > **Rate limits never depend on usage reporting at all.** Model-call storms, tool-call rates,

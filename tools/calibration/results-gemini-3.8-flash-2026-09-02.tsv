@@ -1,0 +1,16 @@
+# Belay estimation calibration
+# provider/model: google/gemini-3.8-flash
+# method: Gemini countTokens API, exact token counts for generated samples
+# date: 2026-09-02
+# gateway: openclaw 2026.8.2
+sample	chars	bytes	tokens
+prose_common_20k	20005	20005	3506
+prose_varied_20k	20005	20005	2540
+spanish_20k	20005	20005	3947
+json_20k	20005	20005	8586
+code_20k	20005	20005	5923
+ids_random_20k	20005	20005	14354
+markdown_20k	20005	20005	3172
+mixed_20k	20005	20005	5558
+mixed_5k	5000	5000	1905
+mixed_40k	40000	40000	11799

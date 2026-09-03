@@ -17,4 +17,8 @@ coverage/
 # Sanitized public versions can be added deliberately, as new files.
 CLAUDE.md
 KICKOFF_PROMPT.md
-docs/
+# Ignore the private working docs individually rather than the whole directory,
+# so published analysis can live alongside them. Anything new in docs/ is
+# ignored by default and must be un-ignored deliberately.
+docs/*
+!docs/CALIBRATION.md

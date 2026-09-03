@@ -11,9 +11,11 @@
  * transport metadata. It never sees a prompt, a reply, or a tool parameter, and
  * it needs no additional hook access to work.
  *
- * It is an estimate and is labelled as one everywhere it surfaces. A cap that
- * trips at roughly the right dollar figure is worth enormously more than no cap
- * at all, which is the honest alternative here.
+ * It is an estimate and is labelled as one everywhere it surfaces. Measured
+ * error against the provider's own tokenizer is roughly +-50% on realistic
+ * content and worse at the extremes -- see docs/CALIBRATION.md for the data.
+ * That is an order-of-magnitude signal, not accounting, and it is worth far
+ * more than the honest alternative here, which is no cap at all.
  */
 import type { Usage } from "./types.ts";
 
@@ -23,16 +25,23 @@ export type EstimationConfig = {
   /**
    * Bytes of request payload per input token.
    *
-   * ~4 bytes per token is the usual rule of thumb for English text, and the
-   * request payload is JSON, so it carries structural overhead that inflates
-   * the byte count relative to real tokens. That bias is deliberate: it makes
-   * the estimate run high, and a cap that trips slightly early is a far cheaper
-   * mistake than one that never trips.
+   * Measured against Gemini's own tokenizer across ten content types: the true
+   * ratio ranges from 1.39 bytes/token for identifier-heavy text to 7.88 for
+   * varied English prose, a 5.7x spread. **No single value is accurate**, which
+   * is a property of tokenizers, not a tuning problem.
+   *
+   * The default sits in the middle of the realistic-payload band (2.33-3.60 for
+   * JSON, code and mixed content), where its error is -33% to +3%. It
+   * over-counts prose, which is the tolerable direction.
+   *
+   * The full experiment, data and per-traffic-type guidance are in
+   * docs/CALIBRATION.md. Calibrated for google/gemini-3.8-flash; other
+   * providers have different tokenizers and need their own measurement.
    */
   bytesPerToken: number;
 };
 
-export const DEFAULT_ESTIMATION: EstimationConfig = { enabled: true, bytesPerToken: 4 };
+export const DEFAULT_ESTIMATION: EstimationConfig = { enabled: true, bytesPerToken: 3.5 };
 
 /** Bytes reported by `model_call_ended`. Both are optional in practice. */
 export type CallBytes = {

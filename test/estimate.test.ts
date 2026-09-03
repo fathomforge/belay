@@ -9,14 +9,22 @@ import {
 import { costOf } from "../src/pricing.ts";
 
 test("request and response bytes become input and output tokens", () => {
+  // Explicit divisor: this test is about the arithmetic, not the default.
   const e = estimateFromBytes(
     { requestPayloadBytes: 40_000, responseStreamBytes: 400 },
-    DEFAULT_ESTIMATION,
+    { enabled: true, bytesPerToken: 4 },
   );
   assert.equal(e.usable, true);
   assert.equal(e.usage.input, 10_000);
   assert.equal(e.usage.output, 100);
   assert.equal(e.tokens, 10_100);
+});
+
+test("the default divisor matches the published calibration", () => {
+  // Measured against Gemini's own tokenizer across ten content types; 3.5 sits
+  // in the realistic-payload band (2.33-3.60). See docs/CALIBRATION.md. If this
+  // changes, that document must change with it.
+  assert.equal(DEFAULT_ESTIMATION.bytesPerToken, 3.5);
 });
 
 test("cache buckets stay zero rather than being guessed", () => {
@@ -45,23 +53,25 @@ test("junk byte counts degrade to unusable rather than NaN", () => {
 });
 
 test("a nonsensical bytesPerToken falls back to the default", () => {
-  const e = estimateFromBytes({ requestPayloadBytes: 4000 }, { enabled: true, bytesPerToken: 0 });
+  const e = estimateFromBytes({ requestPayloadBytes: 3500 }, { enabled: true, bytesPerToken: 0 });
   assert.equal(e.usage.input, 1000);
 });
 
-test("the estimate runs high, which is the safe direction for a cap", () => {
-  // 4 bytes/token against JSON that carries structural overhead: the byte count
-  // exceeds the real token count, so the estimate over-counts slightly.
-  const e = estimateFromBytes({ requestPayloadBytes: 400_000 }, DEFAULT_ESTIMATION);
-  const cost = costOf(e.usage, { input: 0.75, output: 3.75 });
-  assert.ok(cost > 0, "an expensive call must produce a non-zero figure");
-  assert.equal(e.usage.input, 100_000);
+test("the divisor sets the direction of the error, and is measured not guessed", () => {
+  // Real bytes/token spans 1.39 (identifier-heavy) to 7.88 (varied prose), so no
+  // divisor is right for everything. What matters is that a smaller divisor
+  // counts more tokens, i.e. errs toward tripping a cap early.
+  const dense = estimateFromBytes({ requestPayloadBytes: 350_000 }, { enabled: true, bytesPerToken: 2.5 });
+  const sparse = estimateFromBytes({ requestPayloadBytes: 350_000 }, { enabled: true, bytesPerToken: 5 });
+  assert.ok(dense.usage.input > sparse.usage.input);
+  assert.ok(costOf(dense.usage, { input: 0.75, output: 3.75 }) > 0);
 });
 
 test("incident #4: an unmetered 174k heartbeat still trips a daily cap", () => {
   // The whole point. Without estimation this call contributes $0.00 and the cap
   // never fires, however many times it runs.
   const perCall = estimateFromBytes({ requestPayloadBytes: 700_000 }, DEFAULT_ESTIMATION);
+  assert.ok(perCall.usable);
   let spent = 0;
   for (let hour = 0; hour < 14; hour += 1) {
     spent += costOf(perCall.usage, { input: 0.75, output: 3.75 });

@@ -548,9 +548,9 @@ test("a provider that reports no usage still gets spend capped, via estimation",
   belay.llmOutput(ctx, call);
   assert.equal(belay.meter.scope("main").snapshot(T0, "r1").runUsd, 0);
 
-  // Subsequent calls are estimated from bytes. 4 MB of request payload at
-  // 4 bytes/token is 1M input tokens, which is $0.75 at intro pricing.
-  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 4_000_000 });
+  // Subsequent calls are estimated from bytes. 3.5 MB of request payload at the
+  // calibrated 3.5 bytes/token is 1M input tokens, i.e. $0.75 at intro pricing.
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 3_500_000 });
   const snap = belay.meter.scope("main").snapshot(T0, "r1");
   assert.equal(snap.runUsd, 0.75);
   assert.equal(snap.estimatedCalls, 1);
@@ -563,7 +563,7 @@ test("a model reporting real usage is never estimated on top of it", () => {
   const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
 
   belay.llmOutput(ctx, { ...call, usage: { input: 1_000_000 } });
-  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 4_000_000 });
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 3_500_000 });
 
   const snap = belay.meter.scope("main").snapshot(T0, "r1");
   assert.equal(snap.runUsd, 0.75, "measured only, not measured + estimated");
@@ -576,7 +576,7 @@ test("estimation can be turned off, and then nothing is estimated", () => {
   const ctx = { agentId: "main", runId: "r1" };
   const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
   belay.llmOutput(ctx, call);
-  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 4_000_000 });
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 3_500_000 });
   assert.equal(belay.meter.scope("main").snapshot(T0, "r1").runUsd, 0);
 });
 
@@ -587,7 +587,7 @@ test("an estimated breach says so in the reason", () => {
   const ctx = { agentId: "main", runId: "r1" };
   const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
   belay.llmOutput(ctx, call);
-  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 4_000_000 });
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 3_500_000 });
 
   now += 1000;
   const decision = belay.beforeAgentRun(ctx);
@@ -648,7 +648,7 @@ test("estimation works whichever order the two hooks fire in", () => {
     makeLogger(),
     () => T0,
   );
-  forward.modelCallEnded({ agentId: "main", runId: "r1" }, { ...call, requestPayloadBytes: 4_000_000 });
+  forward.modelCallEnded({ agentId: "main", runId: "r1" }, { ...call, requestPayloadBytes: 3_500_000 });
   forward.llmOutput({ agentId: "main", runId: "r1" }, call);
 
   const reverse = createBelay(
@@ -657,7 +657,7 @@ test("estimation works whichever order the two hooks fire in", () => {
     () => T0,
   );
   reverse.llmOutput({ agentId: "main", runId: "r1" }, call);
-  reverse.modelCallEnded({ agentId: "main", runId: "r1" }, { ...call, requestPayloadBytes: 4_000_000 });
+  reverse.modelCallEnded({ agentId: "main", runId: "r1" }, { ...call, requestPayloadBytes: 3_500_000 });
 
   assert.equal(forward.meter.scope("main").snapshot(T0, "r1").runUsd, 0.75);
   assert.equal(reverse.meter.scope("main").snapshot(T0, "r1").runUsd, 0.75, "reverse order too");
