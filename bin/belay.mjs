@@ -176,7 +176,10 @@ opts.trail = opts.trail ?? process.env.BELAY_TRAIL_FILE;
 const command = opts._[0];
 if (opts.help || !command) {
   stdout.write(`${USAGE}\n`);
-  exit(command ? 0 : 1);
+  // Asking for help is a success. Only being invoked with no command at all is
+  // a usage error. Getting this backwards makes every wrapper script that runs
+  // `belay --help` believe the tool is broken.
+  exit(opts.help ? 0 : 1);
 }
 
 try {
