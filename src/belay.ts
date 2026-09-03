@@ -18,6 +18,10 @@ import { Meter } from "./meter.ts";
 import { costOf, priceKey, resolvePrice } from "./pricing.ts";
 import { loadState, StateWriter } from "./store.ts";
 import { readUsage } from "./usage.ts";
+import type { Alerter } from "./alerts.ts";
+import type { Pauser } from "./pauser.ts";
+import { toRecord } from "./recorder.ts";
+import type { Recorder } from "./recorder.ts";
 import type { HookUsage, RungName } from "./types.ts";
 
 const PLUGIN_ID = "belay";
@@ -40,6 +44,8 @@ export type AgentCtx = {
   agentId?: string;
   sessionKey?: string;
   runId?: string;
+  /** Channel plugin id (e.g. "telegram"); needed to identify a pause target. */
+  channel?: string;
   accountId?: string;
 };
 
@@ -60,7 +66,23 @@ function fingerprint(toolName: string, params: unknown): string {
   return createHash("sha256").update(`${toolName} ${serialized}`).digest("hex").slice(0, 16);
 }
 
-export function createBelay(config: BelayConfig, logger: Logger, now: () => number = Date.now) {
+/**
+ * Optional side-effect sinks. All three are omitted in unit tests and in a
+ * default install, which is what keeps "no network, no files, no side effects
+ * unless configured" true by construction rather than by promise.
+ */
+export type Effects = {
+  alerter?: Alerter;
+  recorder?: Recorder;
+  pauser?: Pauser;
+};
+
+export function createBelay(
+  config: BelayConfig,
+  logger: Logger,
+  now: () => number = Date.now,
+  effects: Effects = {},
+) {
   const meter = new Meter(config.timeZone, config.ladder);
   const blindnessReported = new Set<string>();
 
@@ -88,10 +110,35 @@ export function createBelay(config: BelayConfig, logger: Logger, now: () => numb
     if (!worst) return undefined;
 
     const step = scope.ladder.record(at, worst.requested, worst.trigger);
+    if (step.rung === "none") return undefined;
+
+    // Side effects fire only on a *new* step. Everything below this line is
+    // deduplicated by the ladder, which is why 300 identical failures produce
+    // one Telegram message rather than 300.
     if (step.isNew) {
       logger.warn(`[${PLUGIN_ID}] ${scope.key}: ${step.rung} for ${worst.reason}`);
+
+      effects.recorder?.write(
+        toRecord(at, scope.key, step.rung, worst.trigger, worst.observed, worst.limit, worst.reason),
+      );
+
+      void effects.alerter?.notify(
+        { scope: scope.key, rung: step.rung, trigger: worst.trigger, reason: worst.reason, at },
+        at,
+      );
+
+      if (step.rung === "pause" && effects.pauser) {
+        // Fire and forget: an agent turn must never wait on a gateway RPC.
+        // `pause()` is idempotent per account and never rejects.
+        const target =
+          ctx.channel && ctx.accountId
+            ? { channel: ctx.channel, accountId: ctx.accountId }
+            : undefined;
+        void effects.pauser
+          .pause(target, worst.reason)
+          .catch((err: unknown) => logger.error(`[${PLUGIN_ID}] pause failed: ${String(err)}`));
+      }
     }
-    if (step.rung === "none") return undefined;
     return { rung: step.rung, reason: worst.reason };
   }
 

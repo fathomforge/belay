@@ -6,8 +6,14 @@
  * inside the gateway's startup path. That is the fail-open half of the contract;
  * the fail-closed half is that a cap which *does* parse is enforced exactly.
  */
+import { DEFAULT_ALERTS } from "./alerts.ts";
+import type { AlertsConfig } from "./alerts.ts";
 import { DEFAULT_LADDER } from "./ladder.ts";
 import type { LadderConfig } from "./ladder.ts";
+import { DEFAULT_PAUSER } from "./pauser.ts";
+import type { PauserConfig } from "./pauser.ts";
+import { DEFAULT_RECORDER } from "./recorder.ts";
+import type { RecorderConfig } from "./recorder.ts";
 import type { ModelPrice, RungName, Trigger } from "./types.ts";
 
 /** A cap of `undefined` means "not configured", which always means "do not enforce". */
@@ -44,6 +50,9 @@ export type BelayConfig = {
   prices: Record<string, ModelPrice>;
   /** Absolute path for cross-session state. Empty string disables persistence. */
   stateFile: string;
+  alerts: AlertsConfig;
+  pause: PauserConfig;
+  recorder: RecorderConfig;
 };
 
 /**
@@ -77,6 +86,9 @@ export const DEFAULT_CONFIG: BelayConfig = {
   },
   prices: {},
   stateFile: "",
+  alerts: DEFAULT_ALERTS,
+  pause: DEFAULT_PAUSER,
+  recorder: DEFAULT_RECORDER,
 };
 
 /** Problems found while parsing. Surfaced to the operator; never thrown. */
@@ -214,6 +226,9 @@ export function parseConfig(raw: unknown): ParsedConfig {
       rungs: { ...DEFAULT_CONFIG.rungs },
       prices,
       stateFile: typeof src["stateFile"] === "string" ? src["stateFile"] : "",
+      alerts: parseAlerts(src["alerts"], issues),
+      pause: parsePause(src["pause"], issues),
+      recorder: parseRecorder(src["recorder"], issues),
     },
     issues,
   };
@@ -223,4 +238,147 @@ export function parseConfig(raw: unknown): ParsedConfig {
 export function limitsFor(config: BelayConfig, agentId: string | undefined): Limits {
   const overrides = agentId ? config.agents[agentId] : undefined;
   return overrides ? { ...config.limits, ...overrides } : config.limits;
+}
+
+const RUNG_NAMES_LIST = ["none", "warn", "blockTool", "endRun", "pause"];
+
+function str(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+/**
+ * Read a secret from the environment by name, preferring `<field>Env` over an
+ * inline literal.
+ *
+ * A bot token pasted into `openclaw.json` ends up in config backups, in `config
+ * get` output, and in any screenshot the operator posts while asking for help.
+ * Belay accepts it, because refusing would just make people give up, but it
+ * says so once and loudly.
+ */
+function secret(
+  src: Record<string, unknown>,
+  field: string,
+  path: string,
+  issues: ConfigIssue[],
+): string | undefined {
+  const envName = str(src[`${field}Env`]);
+  if (envName) {
+    const value = str(process.env[envName]);
+    if (!value) {
+      issues.push({ path: `${path}.${field}Env`, message: `environment variable ${envName} is not set` });
+      return undefined;
+    }
+    return value;
+  }
+  const inline = str(src[field]);
+  if (inline) {
+    issues.push({
+      path: `${path}.${field}`,
+      message:
+        `prefer ${field}Env with the name of an environment variable: an inline secret ends up ` +
+        "in config backups, `openclaw config get` output and screenshots",
+    });
+    return inline;
+  }
+  return undefined;
+}
+
+function parseAlerts(raw: unknown, issues: ConfigIssue[]): AlertsConfig {
+  const out: AlertsConfig = { ...DEFAULT_ALERTS };
+  if (raw === undefined) return out;
+  if (typeof raw !== "object" || raw === null) {
+    issues.push({ path: "alerts", message: "expected an object" });
+    return out;
+  }
+  const src = raw as Record<string, unknown>;
+
+  const minRung = str(src["minRung"]);
+  if (minRung) {
+    if (RUNG_NAMES_LIST.includes(minRung)) out.minRung = minRung as RungName;
+    else issues.push({ path: "alerts.minRung", message: `unknown rung ${JSON.stringify(minRung)}` });
+  }
+  const maxPerHour = positiveNumber(src["maxPerHour"], "alerts.maxPerHour", issues);
+  if (maxPerHour !== undefined) out.maxPerHour = maxPerHour;
+
+  const tg = src["telegram"];
+  if (typeof tg === "object" && tg !== null) {
+    const t = tg as Record<string, unknown>;
+    const botToken = secret(t, "botToken", "alerts.telegram", issues);
+    const chatId = str(t["chatId"]);
+    if (botToken && chatId) out.telegram = { botToken, chatId };
+    else {
+      issues.push({
+        path: "alerts.telegram",
+        message: "needs both a bot token and chatId; Telegram alerts are off",
+      });
+    }
+  }
+
+  const wh = src["webhook"];
+  if (typeof wh === "object" && wh !== null) {
+    const w = wh as Record<string, unknown>;
+    const url = str(w["url"]);
+    if (!url) {
+      issues.push({ path: "alerts.webhook.url", message: "missing; webhook alerts are off" });
+    } else if (!/^https:\/\//i.test(url)) {
+      // Alerts describe security incidents. Sending them in the clear would be
+      // a poor look for a plugin whose whole pitch is not leaking anything.
+      issues.push({ path: "alerts.webhook.url", message: "must be https; webhook alerts are off" });
+    } else {
+      const headers: Record<string, string> = {};
+      const rawHeaders = w["headers"];
+      if (typeof rawHeaders === "object" && rawHeaders !== null) {
+        for (const [k, v] of Object.entries(rawHeaders as Record<string, unknown>)) {
+          const value = str(v);
+          if (value) headers[k] = value;
+        }
+      }
+      out.webhook = Object.keys(headers).length > 0 ? { url, headers } : { url };
+    }
+  }
+  return out;
+}
+
+function parsePause(raw: unknown, issues: ConfigIssue[]): PauserConfig {
+  const out: PauserConfig = { ...DEFAULT_PAUSER };
+  if (raw === undefined) return out;
+  if (typeof raw !== "object" || raw === null) {
+    issues.push({ path: "pause", message: "expected an object" });
+    return out;
+  }
+  const src = raw as Record<string, unknown>;
+  out.enabled = src["enabled"] === true;
+  const channel = str(src["channel"]);
+  const accountId = str(src["accountId"]);
+  if (channel && accountId) out.target = { channel, accountId };
+  else if (channel || accountId) {
+    issues.push({
+      path: "pause",
+      message: "channel and accountId must be set together; falling back to the hook's own account",
+    });
+  }
+  if (out.enabled && !out.target) {
+    issues.push({
+      path: "pause",
+      message:
+        "enabled without channel/accountId: Belay will only pause when the triggering hook " +
+        "identifies its own account",
+    });
+  }
+  return out;
+}
+
+function parseRecorder(raw: unknown, issues: ConfigIssue[]): RecorderConfig {
+  const out: RecorderConfig = { ...DEFAULT_RECORDER };
+  if (raw === undefined) return out;
+  if (typeof raw !== "object" || raw === null) {
+    issues.push({ path: "recorder", message: "expected an object" });
+    return out;
+  }
+  const src = raw as Record<string, unknown>;
+  const file = str(src["file"]);
+  if (file) out.file = file;
+  const maxBytes = positiveNumber(src["maxBytes"], "recorder.maxBytes", issues);
+  if (maxBytes !== undefined) out.maxBytes = maxBytes;
+  return out;
 }

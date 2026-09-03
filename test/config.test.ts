@@ -61,3 +61,60 @@ test("enabled:false is honoured, and only an explicit false disables", () => {
   assert.equal(parseConfig({ enabled: false }).config.enabled, false);
   assert.equal(parseConfig({ enabled: "no" }).config.enabled, true);
 });
+
+test("no alert config means no transports, which is what keeps it offline", () => {
+  const { config } = parseConfig({});
+  assert.equal(config.alerts.telegram, undefined);
+  assert.equal(config.alerts.webhook, undefined);
+  assert.equal(config.pause.enabled, false);
+  assert.equal(config.recorder.file, "");
+});
+
+test("a telegram token is read from the environment by name", () => {
+  process.env["BELAY_TEST_TOKEN"] = "123:abc";
+  try {
+    const { config, issues } = parseConfig({
+      alerts: { telegram: { botTokenEnv: "BELAY_TEST_TOKEN", chatId: "42" } },
+    });
+    assert.deepEqual(config.alerts.telegram, { botToken: "123:abc", chatId: "42" });
+    assert.deepEqual(issues, []);
+  } finally {
+    delete process.env["BELAY_TEST_TOKEN"];
+  }
+});
+
+test("a missing environment variable disables the transport and says so", () => {
+  const { config, issues } = parseConfig({
+    alerts: { telegram: { botTokenEnv: "BELAY_DEFINITELY_NOT_SET", chatId: "42" } },
+  });
+  assert.equal(config.alerts.telegram, undefined);
+  assert.match(issues.map((i) => i.message).join(" "), /is not set/);
+});
+
+test("an inline token works but is called out as a bad idea", () => {
+  const { config, issues } = parseConfig({
+    alerts: { telegram: { botToken: "123:abc", chatId: "42" } },
+  });
+  // Accepted, because refusing would just make people give up...
+  assert.equal(config.alerts.telegram?.botToken, "123:abc");
+  // ...but it lands in config backups and screenshots, so say so once.
+  assert.match(issues.map((i) => i.message).join(" "), /config backups/);
+});
+
+test("a plaintext webhook is refused", () => {
+  const { config, issues } = parseConfig({ alerts: { webhook: { url: "http://example.com/h" } } });
+  // Alerts describe security incidents; sending them in the clear is not on.
+  assert.equal(config.alerts.webhook, undefined);
+  assert.match(issues.map((i) => i.message).join(" "), /must be https/);
+});
+
+test("pause needs channel and accountId together", () => {
+  const { config, issues } = parseConfig({ pause: { enabled: true, channel: "telegram" } });
+  assert.equal(config.pause.target, undefined);
+  assert.match(issues.map((i) => i.message).join(" "), /must be set together/);
+});
+
+test("pause enabled without a target warns that it may not be able to act", () => {
+  const { issues } = parseConfig({ pause: { enabled: true } });
+  assert.match(issues.map((i) => i.message).join(" "), /only pause when the triggering hook/);
+});

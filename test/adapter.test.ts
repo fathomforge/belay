@@ -7,6 +7,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createBelay, guard } from "../src/belay.ts";
 import { parseConfig } from "../src/config.ts";
+import { Pauser } from "../src/pauser.ts";
+import type { AlertEvent, Alerter } from "../src/alerts.ts";
+import type { Recorder, Record as RecorderRecord } from "../src/recorder.ts";
 
 function makeLogger() {
   const lines: string[] = [];
@@ -244,4 +247,92 @@ test("a thrown non-Error is still contained", () => {
       throw "a string, because providers do that";
     });
   });
+});
+
+test("a pause rung fires the alert, the record and the account stop together", async () => {
+  const { config } = parseConfig({ limits: { spendPerRunUsd: 0.1 } });
+  let now = T0;
+  const logger = makeLogger();
+
+  const alerts: AlertEvent[] = [];
+  const alerter = {
+    notify: async (e: AlertEvent) => {
+      alerts.push(e);
+    },
+  } as unknown as Alerter;
+
+  const records: RecorderRecord[] = [];
+  const recorder = { write: (r: RecorderRecord) => records.push(r) } as unknown as Recorder;
+
+  const stops: { method: string; params: unknown }[] = [];
+  const pauser = new Pauser(
+    { enabled: true },
+    async (method, params) => {
+      stops.push({ method, params });
+      return { ok: true };
+    },
+    logger,
+  );
+
+  const belay = createBelay(config, logger, () => now, { alerter, recorder, pauser });
+  const ctx = { agentId: "main", runId: "r1", channel: "telegram", accountId: "acct-1" };
+
+  // Blow the per-run cap, then keep breaching until the ladder reaches the top.
+  belay.llmOutput(ctx, {
+    provider: "google",
+    model: "gemini-3.8-flash",
+    usage: { input: 1_000_000 },
+    runId: "r1",
+  });
+  for (let i = 0; i < 5; i += 1) {
+    now += 61_000; // clear the cooldown so the ladder climbs a rung each time
+    belay.beforeAgentRun(ctx);
+  }
+  await new Promise((r) => setTimeout(r, 5)); // let the fire-and-forget pause settle
+
+  assert.deepEqual(
+    records.map((r) => r.rung),
+    ["endRun", "pause"],
+    "every new rung is recorded",
+  );
+  assert.deepEqual(alerts.map((a) => a.rung), ["endRun", "pause"]);
+  assert.deepEqual(stops, [
+    { method: "channels.stop", params: { channel: "telegram", accountId: "acct-1" } },
+  ]);
+});
+
+test("with no effects configured, nothing at all happens on the side", async () => {
+  // The default install: a breach still blocks, but writes no file, sends no
+  // alert and calls no gateway method, because none of those exist.
+  const { config } = parseConfig({ limits: { spendPerRunUsd: 0.1 } });
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now);
+  const ctx = { agentId: "main", runId: "r1", channel: "telegram", accountId: "acct-1" };
+  belay.llmOutput(ctx, {
+    provider: "google",
+    model: "gemini-3.8-flash",
+    usage: { input: 1_000_000 },
+    runId: "r1",
+  });
+  for (let i = 0; i < 5; i += 1) {
+    now += 61_000;
+    assert.doesNotThrow(() => belay.beforeAgentRun(ctx));
+  }
+});
+
+test("effects only fire on a new rung, so a storm is one alert per rung", async () => {
+  const { config } = parseConfig({ limits: { identicalToolCalls: 3 } });
+  const alerts: AlertEvent[] = [];
+  const alerter = {
+    notify: async (e: AlertEvent) => {
+      alerts.push(e);
+    },
+  } as unknown as Alerter;
+
+  const belay = createBelay(config, makeLogger(), () => T0, { alerter });
+  const ctx = { agentId: "main", runId: "r1" };
+  for (let i = 0; i < 300; i += 1) {
+    belay.beforeToolCall(ctx, { toolName: "web_fetch", params: { url: "a" } });
+  }
+  assert.equal(alerts.length, 1, "300 identical failures produce one alert");
 });

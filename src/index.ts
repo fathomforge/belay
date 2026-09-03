@@ -11,9 +11,13 @@
  * Verified against openclaw@2026.8.2. See docs/openclaw-plugin-sdk.md.
  */
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { Alerter, buildTransports } from "./alerts.ts";
 import { createBelay, guard } from "./belay.ts";
-import type { AgentCtx, Logger } from "./belay.ts";
+import type { AgentCtx, Effects, Logger } from "./belay.ts";
 import { parseConfig } from "./config.ts";
+import { Pauser } from "./pauser.ts";
+import type { Dispatch } from "./pauser.ts";
+import { Recorder } from "./recorder.ts";
 import { loadState, StateWriter } from "./store.ts";
 import type { HookUsage } from "./types.ts";
 
@@ -43,7 +47,23 @@ export default definePluginEntry({
       return;
     }
 
-    const belay = createBelay(config, logger);
+    // Side effects are constructed only when configured. With a default config
+    // this block produces no transports, no files and no gateway calls, which is
+    // what makes "zero network, zero side effects by default" structural.
+    const transports = buildTransports(
+      config.alerts,
+      typeof globalThis.fetch === "function"
+        ? (globalThis.fetch as unknown as Parameters<typeof buildTransports>[1])
+        : undefined,
+    );
+    const effects: Effects = {};
+    if (transports.length > 0) effects.alerter = new Alerter(config.alerts, transports, logger);
+    if (config.recorder.file) effects.recorder = new Recorder(config.recorder, logger);
+    if (config.pause.enabled) {
+      effects.pauser = new Pauser(config.pause, resolveDispatch(logger), logger);
+    }
+
+    const belay = createBelay(config, logger, Date.now, effects);
 
     if (config.stateFile) {
       const { data, error } = loadState(config.stateFile);
@@ -88,7 +108,54 @@ export default definePluginEntry({
 
     logger.info(
       `[${PLUGIN_ID}] active: caps=${JSON.stringify(config.limits)} tz=${config.timeZone} ` +
-        `agents=${Object.keys(config.agents).length}`,
+        `agents=${Object.keys(config.agents).length} ` +
+        `alerts=${transports.map((t) => t.name).join(",") || "log-only"} ` +
+        `recorder=${config.recorder.file ? "on" : "off"} ` +
+        `autopause=${config.pause.enabled ? "on" : "off"}`,
     );
   },
 });
+
+/**
+ * A dispatcher that loads the gateway RPC module on first use.
+ *
+ * Two reasons this is lazy rather than a top-level import. Only operators who
+ * opt into automatic pausing ever need it, so an eager import would make every
+ * install depend on a module most installs never call. And it must be a dynamic
+ * `import()`, not `require()`: this package is ESM, where `require` is not
+ * defined at all -- a detail that would only have surfaced the first time
+ * someone's agent actually breached the top rung, which is the worst possible
+ * moment to discover it.
+ *
+ * Failure degrades to "cannot pause", reported once, never to a crash.
+ */
+function resolveDispatch(logger: Logger): Dispatch {
+  let cached: Dispatch | undefined;
+  let failed = false;
+
+  return async (method, params, options) => {
+    if (!cached && !failed) {
+      try {
+        const mod = await import("openclaw/plugin-sdk/gateway-method-runtime");
+        if (typeof mod.dispatchGatewayMethod === "function") {
+          cached = mod.dispatchGatewayMethod;
+        } else {
+          failed = true;
+          logger.warn(`[${PLUGIN_ID}] gateway dispatch unavailable; cannot pause accounts.`);
+        }
+      } catch (err) {
+        failed = true;
+        logger.warn(
+          `[${PLUGIN_ID}] cannot load gateway dispatch (${String(err)}); cannot pause accounts.`,
+        );
+      }
+    }
+    if (!cached) {
+      return {
+        ok: false,
+        error: { code: "belay_no_dispatch", message: "gateway dispatch unavailable" },
+      };
+    }
+    return cached(method, params, options);
+  };
+}

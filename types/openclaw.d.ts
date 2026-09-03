@@ -83,3 +83,30 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
 
   export function definePluginEntry(definition: OpenClawPluginDefinition): unknown;
 }
+
+/**
+ * `channels.stop` / `channels.start` and every other gateway control-plane
+ * method, callable in-process. Transcribed from
+ * `dist/plugin-sdk/gateway-method-runtime.d.ts` in openclaw@2026.8.2.
+ */
+declare module "openclaw/plugin-sdk/gateway-method-runtime" {
+  export type GatewayMethodDispatchError = {
+    code: string;
+    message: string;
+    details?: unknown;
+    retryable?: boolean;
+    retryAfterMs?: number;
+  };
+  export type GatewayMethodDispatchResponse = {
+    ok: boolean;
+    payload?: unknown;
+    error?: GatewayMethodDispatchError;
+    meta?: Record<string, unknown>;
+  };
+  export type GatewayMethodDispatchOptions = { expectFinal?: boolean; timeoutMs?: number };
+  export function dispatchGatewayMethod(
+    method: string,
+    params?: unknown,
+    options?: GatewayMethodDispatchOptions,
+  ): Promise<GatewayMethodDispatchResponse>;
+}

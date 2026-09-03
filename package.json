@@ -26,6 +26,7 @@
     "agent-safety"
   ],
   "files": [
+    "bin",
     "dist",
     "openclaw.plugin.json",
     "README.md",
@@ -53,5 +54,8 @@
       "pluginApi": ">=2026.8.2",
       "minGatewayVersion": "2026.8.2"
     }
+  },
+  "bin": {
+    "belay": "./bin/belay.mjs"
   }
 }

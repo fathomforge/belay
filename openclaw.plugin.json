@@ -2,12 +2,17 @@
   "id": "belay",
   "name": "Belay",
   "description": "Spend caps, model-call and tool-call rate limits, and a graceful pause ladder for OpenClaw agents. Local, zero runtime dependencies, no telemetry.",
-  "activation": { "onStartup": true },
+  "activation": {
+    "onStartup": true
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "enabled": { "type": "boolean", "default": true },
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
       "timeZone": {
         "type": "string",
         "description": "IANA timezone for daily rollover. Set this to your own zone, not the container's.",
@@ -17,22 +22,44 @@
         "type": "string",
         "description": "Absolute path for cross-session totals. Empty disables persistence."
       },
-      "limits": { "$ref": "#/$defs/limits" },
+      "limits": {
+        "$ref": "#/$defs/limits"
+      },
       "agents": {
         "type": "object",
         "description": "Per-agent overrides, merged over the global limits.",
-        "additionalProperties": { "$ref": "#/$defs/limits" }
+        "additionalProperties": {
+          "$ref": "#/$defs/limits"
+        }
       },
       "ladder": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "cooldownMs": { "type": "number", "exclusiveMinimum": 0, "default": 60000 },
-          "decayMs": { "type": "number", "exclusiveMinimum": 0, "default": 900000 },
-          "renotifyMs": { "type": "number", "exclusiveMinimum": 0, "default": 21600000 },
+          "cooldownMs": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "default": 60000
+          },
+          "decayMs": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "default": 900000
+          },
+          "renotifyMs": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "default": 21600000
+          },
           "maxRung": {
             "type": "string",
-            "enum": ["none", "warn", "blockTool", "endRun", "pause"],
+            "enum": [
+              "none",
+              "warn",
+              "blockTool",
+              "endRun",
+              "pause"
+            ],
             "description": "Highest rung the ladder may reach. Set to endRun to opt out of pausing an account.",
             "default": "pause"
           }
@@ -44,12 +71,123 @@
         "additionalProperties": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["input", "output"],
+          "required": [
+            "input",
+            "output"
+          ],
           "properties": {
-            "input": { "type": "number", "exclusiveMinimum": 0 },
-            "output": { "type": "number", "exclusiveMinimum": 0 },
-            "cacheRead": { "type": "number", "exclusiveMinimum": 0 },
-            "cacheWrite": { "type": "number", "exclusiveMinimum": 0 }
+            "input": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "output": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "cacheRead": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "cacheWrite": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        }
+      },
+      "alerts": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Where to send alerts. With nothing configured Belay makes no network calls at all.",
+        "properties": {
+          "minRung": {
+            "type": "string",
+            "enum": [
+              "none",
+              "warn",
+              "blockTool",
+              "endRun",
+              "pause"
+            ],
+            "default": "warn"
+          },
+          "maxPerHour": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "default": 20,
+            "description": "Hard ceiling on messages per hour across all transports."
+          },
+          "telegram": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "botTokenEnv": {
+                "type": "string",
+                "description": "Name of the env var holding the bot token. Preferred."
+              },
+              "botToken": {
+                "type": "string",
+                "description": "Inline token. Discouraged: it lands in config backups and `config get` output."
+              },
+              "chatId": {
+                "type": "string"
+              }
+            }
+          },
+          "webhook": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "url"
+            ],
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "Must be https."
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "pause": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Automatic account pausing, the top rung. Off unless enabled deliberately.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "channel": {
+            "type": "string",
+            "description": "Fallback channel id, e.g. \"telegram\"."
+          },
+          "accountId": {
+            "type": "string",
+            "description": "Fallback account id. Set together with channel."
+          }
+        }
+      },
+      "recorder": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Local JSONL log of every decision. Read it with `belay incidents`.",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Absolute path. Empty disables recording."
+          },
+          "maxBytes": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "default": 5242880,
+            "description": "Rotate to <file>.1 past this size. One backup kept."
           }
         }
       }
@@ -59,14 +197,38 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "spendPerRunUsd": { "type": "number", "exclusiveMinimum": 0 },
-          "spendPerHourUsd": { "type": "number", "exclusiveMinimum": 0 },
-          "spendPerDayUsd": { "type": "number", "exclusiveMinimum": 0 },
-          "modelCallsPerMinute": { "type": "number", "exclusiveMinimum": 0 },
-          "toolCallsPerMinute": { "type": "number", "exclusiveMinimum": 0 },
-          "identicalToolCalls": { "type": "number", "exclusiveMinimum": 0 },
-          "toolErrorsPerMinute": { "type": "number", "exclusiveMinimum": 0 },
-          "contextTokensPerCall": { "type": "number", "exclusiveMinimum": 0 }
+          "spendPerRunUsd": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "spendPerHourUsd": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "spendPerDayUsd": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "modelCallsPerMinute": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "toolCallsPerMinute": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "identicalToolCalls": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "toolErrorsPerMinute": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "contextTokensPerCall": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
         }
       }
     }
