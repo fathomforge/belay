@@ -395,3 +395,83 @@ test("observe mode never blocks, however badly the agent behaves", async () => {
   );
   assert.deepEqual(stops, [], "no account is ever stopped in observe mode");
 });
+
+test("per-agent observe: one agent enforces while another only reports", async () => {
+  // The real-world case: enforce on a private agent, leave the group bot that
+  // has actual users on it untouched until you trust the reports.
+  const { config } = parseConfig({
+    mode: "enforce",
+    limits: { spendPerRunUsd: 0.1 },
+    agents: { groupbot: { mode: "observe" } },
+  });
+
+  const stops: string[] = [];
+  const pauser = new Pauser(
+    { enabled: true },
+    async (m) => {
+      stops.push(m);
+      return { ok: true };
+    },
+    makeLogger(),
+  );
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now, { pauser });
+
+  const usage = { provider: "google", model: "gemini-3.8-flash", usage: { input: 1_000_000 } };
+  belay.llmOutput({ agentId: "main", runId: "r1" }, { ...usage, runId: "r1" });
+  belay.llmOutput({ agentId: "groupbot", runId: "g1" }, { ...usage, runId: "g1" });
+
+  now += 1000;
+  assert.equal(
+    belay.beforeAgentRun({ agentId: "main", runId: "r1" }).outcome,
+    "block",
+    "the enforcing agent is stopped",
+  );
+  assert.equal(
+    belay.beforeAgentRun({ agentId: "groupbot", runId: "g1" }).outcome,
+    "pass",
+    "the observing agent keeps serving its users",
+  );
+
+  // Climb hard on the observing agent; it must never reach a real pause.
+  for (let i = 0; i < 10; i += 1) {
+    now += 61_000;
+    belay.beforeAgentRun({ agentId: "groupbot", runId: "g1", channel: "telegram", accountId: "b" });
+  }
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(stops, []);
+});
+
+test("a global observe mode overrides a per-agent enforce", () => {
+  // A stale per-agent override must not defeat a gateway-wide safety setting.
+  const { config } = parseConfig({
+    mode: "observe",
+    limits: { spendPerRunUsd: 0.1 },
+    agents: { main: { mode: "enforce" } },
+  });
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now);
+  belay.llmOutput(
+    { agentId: "main", runId: "r1" },
+    { provider: "google", model: "gemini-3.8-flash", usage: { input: 1_000_000 }, runId: "r1" },
+  );
+  now += 1000;
+  assert.equal(belay.beforeAgentRun({ agentId: "main", runId: "r1" }).outcome, "pass");
+});
+
+test("observe mode records what it would have done", () => {
+  const { config } = parseConfig({ mode: "observe", limits: { spendPerRunUsd: 0.1 } });
+  const records: RecorderRecord[] = [];
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now, {
+    recorder: { write: (r: RecorderRecord) => records.push(r) } as unknown as Recorder,
+  });
+  belay.llmOutput(
+    { agentId: "main", runId: "r1" },
+    { provider: "google", model: "gemini-3.8-flash", usage: { input: 1_000_000 }, runId: "r1" },
+  );
+  now += 1000;
+  belay.beforeAgentRun({ agentId: "main", runId: "r1" });
+  assert.equal(records[0]?.action, "logged");
+  assert.match(records[0]?.reason ?? "", /observe mode: would have been endRun/);
+});

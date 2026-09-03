@@ -206,6 +206,14 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "observe",
+              "enforce"
+            ],
+            "description": "Per-agent override of the top-level mode. A global \"observe\" always wins."
+          },
           "spendPerRunUsd": {
             "type": "number",
             "exclusiveMinimum": 0

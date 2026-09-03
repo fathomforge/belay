@@ -51,6 +51,12 @@ export type BelayConfig = {
   limits: Limits;
   /** Per-agent overrides, merged over `limits`. */
   agents: Record<string, Limits>;
+  /**
+   * Per-agent mode overrides. Lets an operator enforce on a private agent while
+   * a group bot with real users stays in observe -- the difference between
+   * "I can try this today" and "I'll try this when I have a maintenance window".
+   */
+  agentModes: Record<string, Mode>;
   ladder: LadderConfig;
   /** Which rung a first breach of each trigger lands on. */
   rungs: Record<Trigger, RungName>;
@@ -82,6 +88,7 @@ export const DEFAULT_CONFIG: BelayConfig = {
     toolErrorsPerMinute: 30,
   },
   agents: {},
+  agentModes: {},
   ladder: DEFAULT_LADDER,
   rungs: {
     spend_run: "endRun",
@@ -177,10 +184,25 @@ export function parseConfig(raw: unknown): ParsedConfig {
   const limits = { ...DEFAULT_CONFIG.limits, ...parseLimits(src["limits"], "limits", issues) };
 
   const agents: Record<string, Limits> = {};
+  const agentModes: Record<string, Mode> = {};
   const rawAgents = src["agents"];
   if (typeof rawAgents === "object" && rawAgents !== null) {
     for (const [agentId, value] of Object.entries(rawAgents as Record<string, unknown>)) {
-      agents[agentId] = parseLimits(value, `agents.${agentId}`, issues);
+      // `mode` sits alongside the limits for this agent, so pull it out before
+      // parsing the rest as numbers.
+      const entry = (typeof value === "object" && value !== null ? { ...value } : {}) as Record<string, unknown>;
+      const agentMode = entry["mode"];
+      delete entry["mode"];
+      if (typeof agentMode === "string") {
+        if (agentMode === "observe" || agentMode === "enforce") agentModes[agentId] = agentMode;
+        else {
+          issues.push({
+            path: `agents.${agentId}.mode`,
+            message: `expected "observe" or "enforce", got ${JSON.stringify(agentMode)}`,
+          });
+        }
+      }
+      agents[agentId] = parseLimits(entry, `agents.${agentId}`, issues);
     }
   } else if (rawAgents !== undefined) {
     issues.push({ path: "agents", message: "expected an object keyed by agent id" });
@@ -234,10 +256,13 @@ export function parseConfig(raw: unknown): ParsedConfig {
 
   const pause = parsePause(src["pause"], issues);
   if (mode === "observe") {
-    // Belt and braces. Capping the ladder is what actually prevents a block,
-    // but an operator who wrote mode:"observe" must not be able to be surprised
-    // by an account going silent because pause was also enabled.
-    ladder.maxRung = "warn";
+    // Note what is deliberately NOT done here: the ladder is not capped at
+    // `warn`. Capping it would prevent action, but it would also stop the
+    // ladder from ever climbing, so the reports could only ever say "would have
+    // warned" -- destroying the one thing observe mode is for. The clamp in
+    // belay.ts is the single mechanism that prevents action, and it covers
+    // every return path and the pauser. The ladder is left free to climb so the
+    // operator can see the real answer: "this would have paused your account".
     if (pause.enabled) {
       issues.push({
         path: "pause.enabled",
@@ -254,6 +279,7 @@ export function parseConfig(raw: unknown): ParsedConfig {
       timeZone,
       limits,
       agents,
+      agentModes,
       ladder,
       rungs: { ...DEFAULT_CONFIG.rungs },
       prices,
@@ -270,6 +296,19 @@ export function parseConfig(raw: unknown): ParsedConfig {
 export function limitsFor(config: BelayConfig, agentId: string | undefined): Limits {
   const overrides = agentId ? config.agents[agentId] : undefined;
   return overrides ? { ...config.limits, ...overrides } : config.limits;
+}
+
+/**
+ * Effective mode for one agent.
+ *
+ * A global `observe` always wins: an operator who put the whole gateway in
+ * observe mode must not be surprised by one agent still enforcing because of a
+ * stale per-agent override.
+ */
+export function modeFor(config: BelayConfig, agentId: string | undefined): Mode {
+  if (config.mode === "observe") return "observe";
+  const override = agentId ? config.agentModes[agentId] : undefined;
+  return override ?? config.mode;
 }
 
 const RUNG_NAMES_LIST = ["none", "warn", "blockTool", "endRun", "pause"];

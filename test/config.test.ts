@@ -119,12 +119,14 @@ test("pause enabled without a target warns that it may not be able to act", () =
   assert.match(issues.map((i) => i.message).join(" "), /only pause when the triggering hook/);
 });
 
-test("observe mode caps the ladder so nothing can ever be blocked", () => {
+test("observe mode leaves the ladder free to climb, so reports stay useful", () => {
   const { config } = parseConfig({ mode: "observe", limits: { spendPerDayUsd: 0.01 } });
   assert.equal(config.mode, "observe");
-  // The ladder ceiling is the actual mechanism: `warn` never blocks a tool,
-  // never ends a run, never pauses an account.
-  assert.equal(config.ladder.maxRung, "warn");
+  // Capping the ladder here would also prevent action, but then the recorder
+  // could only ever say "would have warned". Action is prevented by the clamp
+  // in belay.ts instead, so the ladder climbs and the report can say what would
+  // really have happened. See the adapter tests for the enforced behaviour.
+  assert.equal(config.ladder.maxRung, "pause");
 });
 
 test("observe mode overrides an enabled pauser rather than trusting the operator", () => {

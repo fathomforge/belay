@@ -10,7 +10,7 @@
  * Payload shapes verified against openclaw@2026.8.2. See docs/openclaw-plugin-sdk.md.
  */
 import { createHash } from "node:crypto";
-import { limitsFor, parseConfig } from "./config.ts";
+import { limitsFor, modeFor, parseConfig } from "./config.ts";
 import type { BelayConfig } from "./config.ts";
 import { evaluate, spendCapsAreBlind } from "./enforcer.ts";
 import type { Surface } from "./enforcer.ts";
@@ -112,22 +112,39 @@ export function createBelay(
     const step = scope.ladder.record(at, worst.requested, worst.trigger);
     if (step.rung === "none") return undefined;
 
+    // Observe mode clamps the acted-on rung to `warn`. The ladder still climbs
+    // internally, so the reports show what *would* have happened, but nothing
+    // above a warning is ever returned to a caller or handed to the pauser.
+    const observing = modeFor(config, ctx.agentId) === "observe";
+    const rung = observing ? "warn" : step.rung;
+
     // Side effects fire only on a *new* step. Everything below this line is
     // deduplicated by the ladder, which is why 300 identical failures produce
     // one Telegram message rather than 300.
     if (step.isNew) {
-      logger.warn(`[${PLUGIN_ID}] ${scope.key}: ${step.rung} for ${worst.reason}`);
+      logger.warn(
+        `[${PLUGIN_ID}] ${scope.key}: ${observing ? `would ${step.rung} (observe mode)` : step.rung}` +
+          ` for ${worst.reason}`,
+      );
 
       effects.recorder?.write(
-        toRecord(at, scope.key, step.rung, worst.trigger, worst.observed, worst.limit, worst.reason),
+        toRecord(
+          at,
+          scope.key,
+          rung,
+          worst.trigger,
+          worst.observed,
+          worst.limit,
+          observing ? `${worst.reason} (observe mode: would have been ${step.rung})` : worst.reason,
+        ),
       );
 
       void effects.alerter?.notify(
-        { scope: scope.key, rung: step.rung, trigger: worst.trigger, reason: worst.reason, at },
+        { scope: scope.key, rung, trigger: worst.trigger, reason: worst.reason, at },
         at,
       );
 
-      if (step.rung === "pause" && effects.pauser) {
+      if (rung === "pause" && effects.pauser) {
         // Fire and forget: an agent turn must never wait on a gateway RPC.
         // `pause()` is idempotent per account and never rejects.
         const target =
@@ -139,7 +156,7 @@ export function createBelay(
           .catch((err: unknown) => logger.error(`[${PLUGIN_ID}] pause failed: ${String(err)}`));
       }
     }
-    return { rung: step.rung, reason: worst.reason };
+    return { rung, reason: worst.reason };
   }
 
   return {

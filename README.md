@@ -88,6 +88,21 @@ reports look right, switch to `"mode": "enforce"`.
 This matters most if your gateway serves real users. A guardrail you don't trust yet should not be
 able to interrupt anyone.
 
+**Per-agent modes** let you enforce where it's safe and observe where it isn't:
+
+```json
+{
+  "mode": "enforce",
+  "agents": {
+    "my-private-bot": { "spendPerDayUsd": 2 },
+    "my-group-bot":   { "mode": "observe" }
+  }
+}
+```
+
+A global `"mode": "observe"` always wins over a per-agent `enforce`, so a gateway-wide safety
+setting can't be defeated by a stale override.
+
 ## See what it's doing
 
 ```bash
