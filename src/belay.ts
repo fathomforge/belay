@@ -188,19 +188,53 @@ export function createBelay(
         { scope: scope.key, rung, trigger: worst.trigger, reason: worst.reason, at },
         at,
       );
-
-      if (rung === "pause" && effects.pauser) {
-        // Fire and forget: an agent turn must never wait on a gateway RPC.
-        // `pause()` is idempotent per account and never rejects.
-        const target =
-          ctx.channel && ctx.accountId
-            ? { channel: ctx.channel, accountId: ctx.accountId }
-            : undefined;
-        void effects.pauser
-          .pause(target, worst.reason)
-          .catch((err: unknown) => logger.error(`[${PLUGIN_ID}] pause failed: ${String(err)}`));
-      }
     }
+
+    // Deliberately outside the `isNew` guard. Once the ladder is at the top the
+    // account should be stopped, and a previous attempt may have failed -- at
+    // the ceiling every later breach is deduplicated, so gating the retry on
+    // `isNew` left the account running while Belay believed it had paused it.
+    // `pause()` is idempotent per account, so a success is never re-dispatched.
+    if (rung === "pause" && effects.pauser && !observing && !settling) {
+      const target =
+        ctx.channel && ctx.accountId ? { channel: ctx.channel, accountId: ctx.accountId } : undefined;
+      void effects.pauser
+        .pause(target, worst.reason)
+        .then((outcome) => {
+          // Report what actually happened. A pause that silently failed leaves
+          // an operator believing an agent was stopped when it is still running.
+          if (outcome.status === "paused") {
+            void effects.alerter?.notify(
+              {
+                scope: scope.key,
+                rung: "pause",
+                trigger: worst.trigger,
+                reason: `account ${outcome.target.channel}:${outcome.target.accountId} is now stopped`,
+                at: now(),
+              },
+              now(),
+            );
+          } else if (outcome.status === "failed" || outcome.status === "no-target") {
+            const why = outcome.status === "failed" ? outcome.error : "no channel account to pause";
+            logger.error(`[${PLUGIN_ID}] PAUSE FAILED: ${why}`);
+            void effects.alerter?.notify(
+              {
+                scope: scope.key,
+                rung: "pause",
+                trigger: worst.trigger,
+                reason:
+                  `PAUSE FAILED (${why}) -- the account is still running. Stop it by hand: ` +
+                  "openclaw gateway call channels.stop --params " +
+                  `'{"channel":"${target?.channel ?? "<channel>"}","accountId":"${ctx.accountId ?? "<accountId>"}"}'`,
+                at: now(),
+              },
+              now(),
+            );
+          }
+        })
+        .catch((err: unknown) => logger.error(`[${PLUGIN_ID}] pause failed: ${String(err)}`));
+    }
+
     return { rung, reason: worst.reason };
   }
 
@@ -218,8 +252,10 @@ export function createBelay(
       // Say what actually happened. "Paused" means an account was stopped and
       // needs a human to restart it; ending a run is a much smaller thing, and
       // conflating them would misinform the person reading the message.
-      const headline =
-        decision.rung === "pause" ? "Belay paused this account" : "Belay stopped this run";
+      // Both rungs stop the run, and that much is certain by the time this is
+      // returned. Whether the account also stopped is not known yet, so the
+      // message does not claim it.
+      const headline = "Belay stopped this run";
       return {
         outcome: "block",
         // `reason` is plugin-internal per the SDK contract; `message` is user-facing.

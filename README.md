@@ -183,8 +183,34 @@ Every limit is optional. **An unset limit is not enforced** — it is never trea
 *you* consider expensive, and a tool that blocks work on install gets uninstalled. Rate limits ship
 on but set well above any sane workload. Account pausing is off unless you turn it on.
 
-Set `ladder.maxRung: "endRun"` to opt out of automatic pausing entirely while keeping everything
-else.
+### Pausing an account
+
+The ladder's top rung stops a channel account outright. **On OpenClaw 2026.8.2 this does not work,
+and Belay ships with the ladder topping out at `endRun` because of it.**
+
+`channels.stop` is reached through the gateway's method dispatch, which is reserved for plugin HTTP
+routes — a hook handler is not an authenticated request scope, so the call is refused:
+
+```
+Gateway method dispatch is reserved for plugin HTTP routes that declare
+contracts.gatewayMethodDispatch: ["authenticated-request"]
+```
+
+Declaring that contract is not sufficient; the call site is the problem. Verified on a live gateway.
+
+This costs less than it sounds. **Ending the run already blocks the offending run and every
+subsequent one while the breach persists** — the agent cannot spend. Pausing additionally stops the
+channel accepting new inbound messages, which is a smaller increment than it appears.
+
+If you set `ladder.maxRung: "pause"` and `pause.enabled: true` anyway, Belay will attempt it, and
+**will tell you plainly when it fails**, including the exact command to stop the account by hand:
+
+```
+PAUSE FAILED (...) -- the account is still running.
+Stop it by hand: openclaw gateway call channels.stop --params '{"channel":"telegram","accountId":"default"}'
+```
+
+An alert that claimed a pause which never happened would be worse than no alert at all.
 
 **Use `botTokenEnv`, not `botToken`.** An inline token ends up in config backups, in
 `openclaw config get` output, and in any screenshot you post while asking for help. Belay accepts

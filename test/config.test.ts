@@ -126,7 +126,9 @@ test("observe mode leaves the ladder free to climb, so reports stay useful", () 
   // could only ever say "would have warned". Action is prevented by the clamp
   // in belay.ts instead, so the ladder climbs and the report can say what would
   // really have happened. See the adapter tests for the enforced behaviour.
-  assert.equal(config.ladder.maxRung, "pause");
+  // endRun is the shipped ceiling; the point here is that observe mode does not
+  // lower it, so the ladder still climbs and reports what would have happened.
+  assert.equal(config.ladder.maxRung, "endRun");
 });
 
 test("observe mode overrides an enabled pauser rather than trusting the operator", () => {

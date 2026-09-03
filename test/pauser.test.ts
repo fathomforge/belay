@@ -83,7 +83,14 @@ test("a gateway error is reported, not thrown", async () => {
   assert.match(logger.lines.join(" "), /channels\.stop failed/);
 });
 
-test("a dispatcher that throws does not retry in a loop", async () => {
+test("a failed pause is retried on a later breach, not silently abandoned", async () => {
+  // Found on a live gateway: the first channels.stop failed, the account stayed
+  // running, and because the ladder deduplicates at its ceiling Belay never
+  // tried again -- while reporting that it had paused the account. Not retrying
+  // is the worse failure, so a failure un-marks the account.
+  //
+  // Hammering is prevented upstream instead: retries only happen on a fresh
+  // ladder breach, which is paced by cooldownMs.
   let attempts = 0;
   const throwing: Dispatch = async () => {
     attempts += 1;
@@ -91,11 +98,17 @@ test("a dispatcher that throws does not retry in a loop", async () => {
   };
   const p = new Pauser({ enabled: true }, throwing, makeLogger());
   assert.equal((await p.pause(target, "x")).status, "failed");
-  // The account is marked before dispatching precisely so a failure cannot
-  // become a hammering loop from a stuck agent.
+  assert.equal(p.isPaused(target), false, "a failed attempt must not look paused");
+
   await p.pause(target, "x");
-  await p.pause(target, "x");
-  assert.equal(attempts, 1);
+  assert.equal(attempts, 2, "a later breach tries again");
+});
+
+test("a successful pause is never re-dispatched, however many breaches follow", async () => {
+  const { calls, impl } = spyDispatch();
+  const p = new Pauser({ enabled: true }, impl, makeLogger());
+  for (let i = 0; i < 10; i += 1) await p.pause(target, "still breaching");
+  assert.equal(calls.length, 1, "idempotent once it has actually worked");
 });
 
 test("a missing dispatcher fails cleanly instead of crashing", async () => {

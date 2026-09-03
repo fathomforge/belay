@@ -66,7 +66,11 @@ export function formatAlert(event: AlertEvent): string {
     warn: "Belay: warning",
     blockTool: "Belay: blocked a tool call",
     endRun: "Belay: ended a run",
-    pause: "Belay: PAUSED an account",
+    // Deliberately future tense: this alert is emitted when the ladder reaches
+    // the top rung, before the gateway has confirmed the account actually
+    // stopped. A separate alert reports what really happened. Claiming a
+    // completed action that then fails is worse than saying nothing.
+    pause: "Belay: pausing an account",
   };
   return `${headline[event.rung]}\nagent: ${event.scope}\nwhy: ${event.reason}\nrule: ${event.trigger}\nat: ${when} UTC`;
 }

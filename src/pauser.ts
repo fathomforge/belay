@@ -111,6 +111,11 @@ export class Pauser {
       );
       if (!res.ok) {
         const message = res.error?.message ?? res.error?.code ?? "unknown gateway error";
+        // Un-mark so a later breach can try again. Marking before dispatch stops
+        // a stuck agent hammering the gateway, but leaving a *failed* attempt
+        // marked meant the account was never paused and never retried, while
+        // Belay believed it had acted. Retries are paced by the ladder.
+        this.#paused.delete(key(resolved));
         this.#logger.error(`[belay] channels.stop failed for ${key(resolved)}: ${message}`);
         return { status: "failed", target: resolved, error: message };
       }
@@ -122,6 +127,7 @@ export class Pauser {
       return { status: "paused", target: resolved };
     } catch (err) {
       const message = String(err);
+      this.#paused.delete(key(resolved));
       this.#logger.error(`[belay] channels.stop threw for ${key(resolved)}: ${message}`);
       return { status: "failed", target: resolved, error: message };
     }

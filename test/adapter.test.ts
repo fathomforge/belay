@@ -250,7 +250,13 @@ test("a thrown non-Error is still contained", () => {
 });
 
 test("a pause rung fires the alert, the record and the account stop together", async () => {
-  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerRunUsd: 0.1 } });
+  // Opts into the top rung explicitly: the shipped default stops at endRun
+  // because a hook cannot call channels.stop on OpenClaw 2026.8.2.
+  const { config } = parseConfig({
+    settleAfterRestartMs: 0,
+    limits: { spendPerRunUsd: 0.1 },
+    ladder: { maxRung: "pause" },
+  });
   let now = T0;
   const logger = makeLogger();
 
@@ -295,7 +301,11 @@ test("a pause rung fires the alert, the record and the account stop together", a
     ["endRun", "pause"],
     "every new rung is recorded",
   );
-  assert.deepEqual(alerts.map((a) => a.rung), ["endRun", "pause"]);
+  // Three alerts, not two: reaching the top rung announces the *attempt*, and a
+  // second alert confirms what the gateway actually did. Claiming a completed
+  // pause that then failed is the failure mode this exists to prevent.
+  assert.deepEqual(alerts.map((a) => a.rung), ["endRun", "pause", "pause"]);
+  assert.match(alerts[2]?.reason ?? "", /is now stopped/);
   assert.deepEqual(stops, [
     { method: "channels.stop", params: { channel: "telegram", accountId: "acct-1" } },
   ]);

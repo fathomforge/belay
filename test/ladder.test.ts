@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Ladder } from "../src/ladder.ts";
+import { DEFAULT_LADDER, Ladder } from "../src/ladder.ts";
 
+// Tests exercise the full ladder, so they opt into the top rung explicitly. The
+// shipped default stops at endRun -- see DEFAULT_LADDER for why.
 const cfg = {
   cooldownMs: 60_000,
   decayMs: 15 * 60_000,
@@ -143,4 +145,10 @@ test("resume clears the renotify memory so a recurrence is heard again", () => {
   assert.equal(l.record(0, "pause", "spend_day").isNew, true);
   l.resume(1_000);
   assert.equal(l.record(2_000, "pause", "spend_day").isNew, true);
+});
+
+test("the shipped default stops at endRun, not pause", () => {
+  // A plugin hook cannot call channels.stop on OpenClaw 2026.8.2, so aiming the
+  // default ladder at `pause` would promise an action Belay cannot perform.
+  assert.equal(DEFAULT_LADDER.maxRung, "endRun");
 });

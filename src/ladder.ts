@@ -29,7 +29,13 @@ export type LadderConfig = {
 export const DEFAULT_LADDER: LadderConfig = {
   cooldownMs: 60_000,
   decayMs: 15 * 60_000,
-  maxRung: "pause",
+  // Tops out at endRun, not pause. On OpenClaw 2026.8.2 a plugin hook cannot
+  // call channels.stop: gateway method dispatch is reserved for plugin HTTP
+  // routes, and a hook handler is not a request scope. Aiming the ladder at a
+  // rung that cannot fire would mean promising an action Belay cannot take.
+  // Ending the run already blocks the current run and every later one while the
+  // breach persists. See README, "Pausing an account".
+  maxRung: "endRun",
   renotifyMs: 6 * 3_600_000,
 };
 

@@ -64,7 +64,9 @@ test("a transport is only built for what the operator configured", () => {
 
 test("an alert carries numbers and reasons, never content", () => {
   const text = formatAlert(event);
-  assert.match(text, /PAUSED/);
+  // Future tense on purpose: the top-rung alert fires before the gateway has
+  // confirmed the account stopped. A second alert reports what actually happened.
+  assert.match(text, /pausing an account/);
   assert.match(text, /main/);
   assert.match(text, /daily spend/);
   assert.match(text, /spend_day/);
@@ -142,7 +144,7 @@ test("every alert leaves a local log line even when transports fail", async () =
   };
   const logger = makeLogger();
   await new Alerter(DEFAULT_ALERTS, [failing], logger).notify(event, T0);
-  assert.match(logger.lines.join("\n"), /alert: Belay: PAUSED/);
+  assert.match(logger.lines.join("\n"), /alert: Belay: pausing an account/);
 });
 
 test("the webhook payload is structured for machines and free of content", async () => {

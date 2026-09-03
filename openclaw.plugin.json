@@ -287,5 +287,10 @@
         }
       }
     }
+  },
+  "contracts": {
+    "gatewayMethodDispatch": [
+      "authenticated-request"
+    ]
   }
 }

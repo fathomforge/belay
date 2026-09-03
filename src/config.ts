@@ -269,7 +269,7 @@ export function parseConfig(raw: unknown): ParsedConfig {
   };
   const maxRung = rawLadder["maxRung"];
   if (typeof maxRung === "string") {
-    if (maxRung in DEFAULT_CONFIG.rungs || ["none", "warn", "blockTool", "endRun", "pause"].includes(maxRung)) {
+    if (["none", "warn", "blockTool", "endRun", "pause"].includes(maxRung)) {
       ladder.maxRung = maxRung as RungName;
     } else {
       issues.push({ path: "ladder.maxRung", message: `unknown rung ${JSON.stringify(maxRung)}` });

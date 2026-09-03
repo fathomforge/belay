@@ -47,9 +47,12 @@ function check(
 
 test("incident #1: a confabulation storm escalates to a pause and alerts once per rung", () => {
   // "148 events from one message, ~11 model calls/min, until restarted."
+  // Opts into the top rung: the shipped ceiling is endRun, because a plugin
+  // hook cannot call channels.stop on OpenClaw 2026.8.2. This replay is about
+  // the ladder's escalation logic, so it exercises all four rungs.
   const { config } = parseConfig({
     limits: { modelCallsPerMinute: 10, spendPerRunUsd: 0.5 },
-    ladder: { cooldownMs: 60_000, decayMs: 15 * 60_000 },
+    ladder: { cooldownMs: 60_000, decayMs: 15 * 60_000, maxRung: "pause" },
   });
   const meter = new Meter(config.timeZone, config.ladder);
   const actions: Action[] = [];
