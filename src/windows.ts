@@ -103,6 +103,20 @@ export class SlidingWindow {
  * from the process: incident #5 was a container running UTC while the operator
  * was on Pacific, and reading `process.env.TZ` would rebuild that bug here.
  */
+/**
+ * A day key we are willing to believe. Anything else -- a truncated file, a
+ * hostile hand-edit, `"9999-99-99"` -- is treated as "no day recorded" rather
+ * than as a day that could out-rank a real one.
+ */
+export function isDayKey(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return false;
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+}
+
 export class DailyTotal {
   readonly timeZone: string;
   #day = "";
@@ -135,12 +149,27 @@ export class DailyTotal {
     return this.#total;
   }
 
+  /**
+   * Roll to a new calendar day -- but only ever *forward*.
+   *
+   * The naive `key !== this.#day` reset had a silent-non-enforcement bug in it:
+   * any backwards step of the clock across the local midnight (an NTP
+   * correction, a VM resuming from a snapshot, a container whose clock is
+   * disciplined after boot) read as "a different day" and zeroed the day's
+   * spend. A cap of $5 that has already reached $4.90 would go back to $0 and
+   * let the agent spend the day's budget twice.
+   *
+   * Days only ever advance in reality, so an *earlier* key is never a real
+   * rollover. Attribute those events to the day already in progress: the
+   * accounting is off by however far the clock moved, which is a rounding error
+   * next to un-spending a whole day.
+   */
   #roll(at: number): void {
     const key = this.dayKey(at);
-    if (key !== this.#day) {
-      this.#day = key;
-      this.#total = 0;
-    }
+    if (key === this.#day) return;
+    if (this.#day !== "" && key < this.#day) return;
+    this.#day = key;
+    this.#total = 0;
   }
 
   /** Serializable form, so `store.ts` can persist cross-session daily spend. */
@@ -148,10 +177,23 @@ export class DailyTotal {
     return { day: this.#day, total: this.#total };
   }
 
-  static fromJSON(timeZone: string, data: { day: string; total: number }): DailyTotal {
+  /**
+   * Restore from persisted state. Total by construction: the state file is
+   * shared with other processes and can be truncated, hand-edited or corrupt,
+   * and a throw here happens during plugin registration -- which would leave the
+   * remaining hooks unregistered and the gateway unguarded.
+   */
+  static fromJSON(timeZone: string, data: { day: string; total: number } | undefined): DailyTotal {
     const d = new DailyTotal(timeZone);
-    d.#day = data.day;
-    d.#total = data.total;
+    if (!data || typeof data !== "object") return d;
+    // A day we cannot parse must not out-rank a real one in `#roll` or in
+    // `mergeState`, so it degrades to "nothing recorded yet".
+    if (isDayKey(data.day)) d.#day = data.day;
+    if (typeof data.total === "number" && Number.isFinite(data.total) && data.total > 0) {
+      // Only a recorded day can carry a total; a total with no day would be
+      // attributed to whatever day happens to arrive first.
+      d.#total = d.#day === "" ? 0 : data.total;
+    }
     return d;
   }
 }

@@ -141,3 +141,56 @@ test("a model call with no usage at all is counted, not silently ignored", () =>
   // Distinct from unpriced: those at least contribute tokens.
   assert.equal(snap.unpricedCalls, 0);
 });
+
+test("an empty agentId is not a scope of its own", () => {
+  // `agentId ?? sessionKey` accepts "" -- it is neither null nor undefined --
+  // so a hook context carrying an empty agent id used to open a second bucket
+  // for an agent that already had one. That is the two-halves bug from the
+  // README: each bucket sees part of the spend and neither reaches the cap.
+  const m = new Meter("UTC");
+  const t = Date.parse("2026-09-02T10:00:00Z");
+  m.scope("", "agent:main:main").recordUsage(t, "r1", { usd: 1, tokens: 10, priceable: true });
+  m.scope("main", undefined).recordUsage(t, "r1", { usd: 1, tokens: 10, priceable: true });
+  m.scope("  ", "agent:main:main").recordUsage(t, "r1", { usd: 1, tokens: 10, priceable: true });
+
+  assert.equal(m.scopes().length, 1, "one agent, one scope");
+  assert.equal(m.scope("main").snapshot(t).dayUsd, 3);
+});
+
+test("a corrupt persisted scope is skipped, never fatal", () => {
+  // `load` runs during plugin registration, before the hooks are wired up: a
+  // throw here leaves Belay loaded, reporting itself active, and metering
+  // nothing at all. Every one of these is a shape a truncated or hand-edited
+  // state file can really have.
+  const m = new Meter("UTC");
+  m.load([
+    { key: "no-day-field" },
+    { key: "no-ladder", day: { day: "2026-09-02", total: 1 } },
+    { key: "", day: { day: "2026-09-02", total: 1 }, ladder: { rung: "warn", lastTriggerAt: 0, lastActionAt: 0 } },
+    { key: "good", day: { day: "2026-09-02", total: 2.5 }, ladder: { rung: "warn", lastTriggerAt: 1, lastActionAt: 1 } },
+  ] as never);
+
+  const keys = m.scopes().map((s) => s.key).sort();
+  assert.deepEqual(keys, ["good", "no-day-field", "no-ladder"]);
+  // The usable scope still restored its real numbers.
+  assert.equal(m.scope("good").snapshot(Date.parse("2026-09-02T10:00:00Z")).dayUsd, 2.5);
+});
+
+test("scope churn cannot grow the meter without bound", () => {
+  // The scope key falls back to the session key, and some gateways mint a fresh
+  // session per inbound message. Unbounded growth here is not just memory: every
+  // scope is serialized into the state file on each flush.
+  const m = new Meter("UTC");
+  const t = Date.parse("2026-09-02T10:00:00Z");
+  for (let i = 0; i < 2_500; i += 1) {
+    m.scope(undefined, `telegram:${i}`).recordUsage(t, "r1", { usd: 0.001, tokens: 1, priceable: true });
+    // A real agent is touched throughout, so it must survive the eviction.
+    m.scope("main").recordUsage(t, "r1", { usd: 0.001, tokens: 1, priceable: true });
+  }
+  assert.ok(m.scopes().length <= 2_000, `bounded, got ${m.scopes().length}`);
+  assert.ok(
+    m.scopes().some((s) => s.key === "main"),
+    "the recently used scope is kept, not the oldest",
+  );
+  assert.equal(Math.round(m.scope("main").snapshot(t).dayUsd * 1000) / 1000, 2.5);
+});

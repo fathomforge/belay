@@ -216,3 +216,78 @@ test("a flush merges with whatever is already on disk", () => {
   writer.flush();
   assert.equal(loadState(file).data?.scopes[0]?.day.total, 5);
 });
+
+test("a garbage day key cannot erase a real day's spend", () => {
+  // `mergeDaily` lets a later day supersede an earlier one, which is right for
+  // real dates and catastrophic for junk: "9999-99-99" sorts above every real
+  // date, so a single corrupt (or hostile) line in the shared state file would
+  // win every merge from then on and reset the day's total to zero on every
+  // flush. The in-memory meter would keep counting; the persisted cap would not.
+  const real: StoreData = {
+    version: 1,
+    scopes: [
+      {
+        key: "main",
+        day: { day: "2026-09-02", total: 4.5 },
+        ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 },
+      },
+    ],
+  };
+  const poisoned: StoreData = {
+    version: 1,
+    scopes: [
+      {
+        key: "main",
+        day: { day: "9999-99-99", total: 0 },
+        ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 },
+      },
+    ],
+  };
+  assert.deepEqual(mergeState(poisoned, real).scopes[0]?.day, { day: "2026-09-02", total: 4.5 });
+  assert.deepEqual(mergeState(real, poisoned).scopes[0]?.day, { day: "2026-09-02", total: 4.5 });
+});
+
+test("a non-numeric total is not merged as spend", () => {
+  const mine: StoreData = {
+    version: 1,
+    scopes: [
+      {
+        key: "main",
+        day: { day: "2026-09-02", total: 4.5 },
+        ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 },
+      },
+    ],
+  };
+  const junk = {
+    version: 1,
+    scopes: [
+      {
+        key: "main",
+        // NaN survives JSON as null, but a hand-edited or third-party file can
+        // hold anything. `Math.max(NaN, x)` is NaN, and a NaN daily total makes
+        // every later comparison false -- a cap that can never be reached.
+        day: { day: "2026-09-02", total: "lots" },
+        ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 },
+      },
+    ],
+  } as unknown as StoreData;
+  assert.deepEqual(mergeState(junk, mine).scopes[0]?.day, { day: "2026-09-02", total: 4.5 });
+});
+
+test("a corrupt day is scrubbed even when only one side has the scope", () => {
+  // The `!existing` path copies the incoming scope straight through, so junk
+  // that arrives on a key the other side has never seen would be written back
+  // to the file verbatim and poison every later merge.
+  const poisoned = {
+    version: 1,
+    scopes: [
+      {
+        key: "other",
+        day: { day: "not-a-day", total: 3 },
+        ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 },
+      },
+    ],
+  } as unknown as StoreData;
+  const merged = mergeState(poisoned, { version: 1, scopes: [] });
+  assert.deepEqual(merged.scopes[0]?.day, { day: "", total: 0 });
+});

@@ -86,3 +86,65 @@ test("DailyTotal survives a round trip through JSON", () => {
 test("DailyTotal rejects an invalid timezone at construction", () => {
   assert.throws(() => new DailyTotal("Mars/Olympus_Mons"), RangeError);
 });
+
+test("a clock stepping backwards across midnight does not un-spend the day", () => {
+  // NTP correcting a container's clock, or a VM resuming from a snapshot, moves
+  // `Date.now()` backwards by seconds to minutes. If that step lands on the
+  // other side of the local midnight, the naive "the day key changed, so reset"
+  // rule zeroes a daily cap that was nearly full, and the agent gets to spend
+  // the whole budget a second time -- with no error anywhere.
+  const d = new DailyTotal("America/Los_Angeles");
+  const justAfterMidnightPT = Date.parse("2026-09-03T07:00:30Z");
+  d.add(justAfterMidnightPT, 4.9);
+  assert.equal(d.dayKey(justAfterMidnightPT), "2026-09-03");
+
+  const correctedBack = justAfterMidnightPT - 60_000; // now 23:59:30 on Sept 2
+  assert.equal(d.dayKey(correctedBack), "2026-09-02");
+  d.add(correctedBack, 0.05);
+
+  assert.equal(d.total(justAfterMidnightPT), 4.95, "the day's spend survives the correction");
+});
+
+test("a real rollover still resets, in the configured zone", () => {
+  const d = new DailyTotal("America/Los_Angeles");
+  d.add(Date.parse("2026-09-02T20:00:00Z"), 3);
+  assert.equal(d.total(Date.parse("2026-09-02T20:00:00Z")), 3);
+  // 17:00 PT on the 3rd: a genuine new calendar day, so the total starts over.
+  assert.equal(d.total(Date.parse("2026-09-04T00:00:00Z")), 0);
+});
+
+test("DST does not create or destroy a day in the daily total", () => {
+  // US DST ends 2026-11-01, when 01:00-02:00 PT happens twice. Both instances
+  // are the same calendar day, so a daily cap must keep accumulating across the
+  // repeated hour rather than treating the second pass as a new day.
+  const d = new DailyTotal("America/Los_Angeles");
+  const firstOneThirty = Date.parse("2026-11-01T08:30:00Z"); // 01:30 PDT
+  const secondOneThirty = Date.parse("2026-11-01T09:30:00Z"); // 01:30 PST
+  d.add(firstOneThirty, 1);
+  d.add(secondOneThirty, 1);
+  assert.equal(d.dayKey(firstOneThirty), "2026-11-01");
+  assert.equal(d.dayKey(secondOneThirty), "2026-11-01");
+  assert.equal(d.total(secondOneThirty), 2);
+
+  // Spring forward 2026-03-08: 02:00-03:00 PT does not exist, and the day is
+  // 23 hours long. It is still one calendar day.
+  const spring = new DailyTotal("America/Los_Angeles");
+  spring.add(Date.parse("2026-03-08T09:59:00Z"), 1); // 01:59 PST
+  spring.add(Date.parse("2026-03-08T10:01:00Z"), 1); // 03:01 PDT
+  assert.equal(spring.total(Date.parse("2026-03-08T18:00:00Z")), 2);
+  assert.equal(spring.total(Date.parse("2026-03-09T18:00:00Z")), 0, "the next day is a new day");
+});
+
+test("a corrupt persisted day cannot poison the total", () => {
+  // The state file is shared with other processes and can be truncated or
+  // hand-edited. A day like "9999-99-99" sorts above every real date, so left
+  // unchecked it would win every merge and never roll over.
+  const bogus = DailyTotal.fromJSON("UTC", { day: "9999-99-99", total: 100 });
+  assert.deepEqual(bogus.toJSON(), { day: "", total: 0 });
+
+  const nan = DailyTotal.fromJSON("UTC", { day: "2026-09-02", total: Number.NaN });
+  assert.deepEqual(nan.toJSON(), { day: "2026-09-02", total: 0 });
+
+  // Nothing at all is the first-run case, and must not throw during startup.
+  assert.deepEqual(DailyTotal.fromJSON("UTC", undefined).toJSON(), { day: "", total: 0 });
+});

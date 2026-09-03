@@ -22,3 +22,4 @@ KICKOFF_PROMPT.md
 # ignored by default and must be un-ignored deliberately.
 docs/*
 !docs/CALIBRATION.md
+!docs/SECURITY-CONTROLS.md

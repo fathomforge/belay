@@ -14,7 +14,7 @@ import { limitsFor, modeFor, parseConfig } from "./config.ts";
 import type { BelayConfig } from "./config.ts";
 import { evaluate, spendCapsAreBlind } from "./enforcer.ts";
 import type { Surface } from "./enforcer.ts";
-import { Meter } from "./meter.ts";
+import { agentIdFromSessionKey, ident, Meter } from "./meter.ts";
 import { costOf, priceKey, resolvePrice } from "./pricing.ts";
 import { loadState, StateWriter } from "./store.ts";
 import { readUsage } from "./usage.ts";
@@ -54,6 +54,60 @@ export type AgentCtx = {
 type BlockDecision =
   | { outcome: "pass" }
   | { outcome: "block"; reason: string; message: string; category: string };
+
+/**
+ * The key a run is metered under.
+ *
+ * Two failures this exists to prevent, both of which switch off the per-run
+ * limits without saying anything:
+ *
+ *  - `??` accepts an empty string, so a hook context carrying `runId: ""` used to
+ *    meter into a run named `""` -- while `snapshot()` treats `""` as falsy and
+ *    reads no run at all. Spend and identical-call limits for that run could
+ *    then never fire, however much the agent spent.
+ *  - A context with no run id at all still deserves per-run accounting; falling
+ *    back to the session groups a turn's calls together and `agent_end` clears
+ *    it, so the bucket cannot latch forever the way a shared "unknown" does.
+ */
+function runKeyOf(ctx: AgentCtx, eventRunId?: string): string {
+  return (
+    ident(eventRunId) ??
+    ident(ctx.runId) ??
+    (ident(ctx.sessionKey) === undefined ? undefined : `session:${ident(ctx.sessionKey)}`) ??
+    "unknown"
+  );
+}
+
+/**
+ * The agent a hook context belongs to, by the *same* rule the meter uses.
+ *
+ * The scope key already recovers the agent id from a session key such as
+ * `agent:main:main`, because some hooks carry `agentId` and others only carry
+ * `sessionKey`. Per-agent config was not doing the same recovery, so on the
+ * hooks that supply only a session key:
+ *
+ *  - a tighter per-agent cap silently reverted to the looser global one, on an
+ *    agent the operator had specifically singled out as expensive; and
+ *  - a per-agent `"mode": "observe"` was ignored, so Belay would block and end
+ *    runs for the very agent the operator had said not to interrupt.
+ *
+ * Spend was still metered under the right scope, which is what made this hard to
+ * see: the numbers looked right and the policy applied to them did not.
+ */
+function agentIdOf(ctx: AgentCtx): string | undefined {
+  return ident(ctx.agentId) ?? agentIdFromSessionKey(ctx.sessionKey);
+}
+
+/**
+ * Key for buffered request sizes: one run's one model, not one run.
+ *
+ * `model_call_ended` and `llm_output` both carry the provider and model, so the
+ * pair can be matched exactly. Falling back to the run alone (when neither is
+ * reported) is the old behaviour and is still safe on a single-model run.
+ */
+function pendingKey(runKey: string, provider?: string, model?: string): string {
+  return `${runKey}\u0000${priceKey(provider ?? "", model ?? "")}`;
+}
 
 /** Hash a tool call so repeats can be counted without retaining parameters. */
 function fingerprint(toolName: string, params: unknown): string {
@@ -130,8 +184,9 @@ export function createBelay(
   function assess(ctx: AgentCtx, surface: Surface): { rung: RungName; reason: string } | undefined {
     const at = now();
     const scope = meter.scope(ctx.agentId, ctx.sessionKey);
-    const limits = limitsFor(config, ctx.agentId);
-    const snapshot = scope.snapshot(at, ctx.runId);
+    const agentId = agentIdOf(ctx);
+    const limits = limitsFor(config, agentId);
+    const snapshot = scope.snapshot(at, runKeyOf(ctx));
 
     // Tell the operator once per scope if their spend caps are only partial.
     if (spendCapsAreBlind(snapshot, limits) && !blindnessReported.has(scope.key)) {
@@ -153,7 +208,7 @@ export function createBelay(
     // Observe mode clamps the acted-on rung to `warn`. The ladder still climbs
     // internally, so the reports show what *would* have happened, but nothing
     // above a warning is ever returned to a caller or handed to the pauser.
-    const observing = modeFor(config, ctx.agentId) === "observe";
+    const observing = modeFor(config, agentId) === "observe";
     // A restart drains the ingress spool as a burst, so the minutes right after
     // startup are not representative traffic. Warn, but do not act on them.
     const settling = at - startedAt < config.settleAfterRestartMs;
@@ -162,77 +217,94 @@ export function createBelay(
     // Side effects fire only on a *new* step. Everything below this line is
     // deduplicated by the ladder, which is why 300 identical failures produce
     // one Telegram message rather than 300.
-    if (step.isNew) {
-      logger.warn(
-        `[${PLUGIN_ID}] ${scope.key}: ${observing ? `would ${step.rung} (observe mode)` : step.rung}` +
-          ` for ${worst.reason}`,
-      );
+    //
+    // The whole block is wrapped: reporting a decision must never be able to
+    // cancel it. Without this, a throw from a logger, a recorder or an alert
+    // transport propagates to `guard`, which -- correctly, for a bug -- returns
+    // the permissive fallback. The breach would then be silently *unenforced*
+    // because telling someone about it failed, which is the worst possible
+    // trade. The decision itself is already made; only the telling is optional.
+    try {
+      if (step.isNew) {
+        logger.warn(
+          `[${PLUGIN_ID}] ${scope.key}: ${observing ? `would ${step.rung} (observe mode)` : step.rung}` +
+            ` for ${worst.reason}`,
+        );
 
-      effects.recorder?.write(
-        toRecord(
+        effects.recorder?.write(
+          toRecord(
+            at,
+            scope.key,
+            rung,
+            worst.trigger,
+            worst.observed,
+            worst.limit,
+            observing
+              ? `${worst.reason} (observe mode: would have been ${step.rung})`
+              : settling
+                ? `${worst.reason} (settling after restart: would have been ${step.rung})`
+                : worst.reason,
+          ),
+        );
+
+        void effects.alerter?.notify(
+          { scope: scope.key, rung, trigger: worst.trigger, reason: worst.reason, at },
           at,
-          scope.key,
-          rung,
-          worst.trigger,
-          worst.observed,
-          worst.limit,
-          observing
-            ? `${worst.reason} (observe mode: would have been ${step.rung})`
-            : settling
-              ? `${worst.reason} (settling after restart: would have been ${step.rung})`
-              : worst.reason,
-        ),
-      );
+        );
+      }
 
-      void effects.alerter?.notify(
-        { scope: scope.key, rung, trigger: worst.trigger, reason: worst.reason, at },
-        at,
-      );
-    }
-
-    // Deliberately outside the `isNew` guard. Once the ladder is at the top the
-    // account should be stopped, and a previous attempt may have failed -- at
-    // the ceiling every later breach is deduplicated, so gating the retry on
-    // `isNew` left the account running while Belay believed it had paused it.
-    // `pause()` is idempotent per account, so a success is never re-dispatched.
-    if (rung === "pause" && effects.pauser && !observing && !settling) {
-      const target =
-        ctx.channel && ctx.accountId ? { channel: ctx.channel, accountId: ctx.accountId } : undefined;
-      void effects.pauser
-        .pause(target, worst.reason)
-        .then((outcome) => {
-          // Report what actually happened. A pause that silently failed leaves
-          // an operator believing an agent was stopped when it is still running.
-          if (outcome.status === "paused") {
-            void effects.alerter?.notify(
-              {
-                scope: scope.key,
-                rung: "pause",
-                trigger: worst.trigger,
-                reason: `account ${outcome.target.channel}:${outcome.target.accountId} is now stopped`,
-                at: now(),
-              },
-              now(),
-            );
-          } else if (outcome.status === "failed" || outcome.status === "no-target") {
-            const why = outcome.status === "failed" ? outcome.error : "no channel account to pause";
-            logger.error(`[${PLUGIN_ID}] PAUSE FAILED: ${why}`);
-            void effects.alerter?.notify(
-              {
-                scope: scope.key,
-                rung: "pause",
-                trigger: worst.trigger,
-                reason:
-                  `PAUSE FAILED (${why}) -- the account is still running. Stop it by hand: ` +
-                  "openclaw gateway call channels.stop --params " +
-                  `'{"channel":"${target?.channel ?? "<channel>"}","accountId":"${ctx.accountId ?? "<accountId>"}"}'`,
-                at: now(),
-              },
-              now(),
-            );
-          }
-        })
-        .catch((err: unknown) => logger.error(`[${PLUGIN_ID}] pause failed: ${String(err)}`));
+      // Deliberately outside the `isNew` guard. Once the ladder is at the top the
+      // account should be stopped, and a previous attempt may have failed -- at
+      // the ceiling every later breach is deduplicated, so gating the retry on
+      // `isNew` left the account running while Belay believed it had paused it.
+      // `pause()` is idempotent per account, so a success is never re-dispatched.
+      if (rung === "pause" && effects.pauser && !observing && !settling) {
+        const target =
+          ctx.channel && ctx.accountId ? { channel: ctx.channel, accountId: ctx.accountId } : undefined;
+        void effects.pauser
+          .pause(target, worst.reason)
+          .then((outcome) => {
+            // Report what actually happened. A pause that silently failed leaves
+            // an operator believing an agent was stopped when it is still running.
+            if (outcome.status === "paused") {
+              void effects.alerter?.notify(
+                {
+                  scope: scope.key,
+                  rung: "pause",
+                  trigger: worst.trigger,
+                  reason: `account ${outcome.target.channel}:${outcome.target.accountId} is now stopped`,
+                  at: now(),
+                },
+                now(),
+              );
+            } else if (outcome.status === "failed" || outcome.status === "no-target") {
+              const why = outcome.status === "failed" ? outcome.error : "no channel account to pause";
+              logger.error(`[${PLUGIN_ID}] PAUSE FAILED: ${why}`);
+              void effects.alerter?.notify(
+                {
+                  scope: scope.key,
+                  rung: "pause",
+                  trigger: worst.trigger,
+                  reason:
+                    `PAUSE FAILED (${why}) -- the account is still running. Stop it by hand: ` +
+                    "openclaw gateway call channels.stop --params " +
+                    `'{"channel":"${target?.channel ?? "<channel>"}","accountId":"${ctx.accountId ?? "<accountId>"}"}'`,
+                  at: now(),
+                },
+                now(),
+              );
+            }
+          })
+          .catch((err: unknown) => logger.error(`[${PLUGIN_ID}] pause failed: ${String(err)}`));
+      }
+    } catch (err) {
+      // Last resort: the log call itself is what usually fails here, so this is
+      // best-effort too.
+      try {
+        logger.error(`[${PLUGIN_ID}] reporting a decision failed, enforcing anyway: ${String(err)}`);
+      } catch {
+        /* nothing left to do */
+      }
     }
 
     return { rung, reason: worst.reason };
@@ -271,7 +343,7 @@ export function createBelay(
       event: { toolName: string; params?: unknown },
     ): { block?: boolean; blockReason?: string } {
       const scope = meter.scope(ctx.agentId, ctx.sessionKey);
-      scope.recordToolCall(now(), ctx.runId ?? "unknown", fingerprint(event.toolName, event.params));
+      scope.recordToolCall(now(), runKeyOf(ctx), fingerprint(event.toolName, event.params));
       const decision = assess(ctx, "tool_call");
       if (!decision || decision.rung === "none" || decision.rung === "warn") return {};
       return { block: true, blockReason: `Belay blocked this tool call: ${decision.reason}.` };
@@ -303,20 +375,25 @@ export function createBelay(
         responseStreamBytes?: number;
       },
     ): void {
-      const runKey = event.runId ?? ctx.runId ?? "unknown";
+      const runKey = runKeyOf(ctx, event.runId);
       // Always record the exact size, whatever estimation is set to: byte
       // limits do not depend on it and are accurate on every provider.
       meter
         .scope(ctx.agentId, ctx.sessionKey)
         .recordRequestBytes(now(), runKey, event.requestPayloadBytes ?? 0);
       if (!config.estimation.enabled) return;
-      // If llm_output already reported no usage for this run, complete the pair
+      const callKey = pendingKey(runKey, event.provider, event.model);
+      // If llm_output already reported no usage for this call, complete the pair
       // now. Otherwise hold the sizes until it does.
-      if (pending.isAwaiting(runKey)) {
-        pending.clearAwaiting(runKey);
-        if (recordEstimate(ctx, event.provider ?? "", event.model ?? "", runKey, event)) return;
+      if (pending.isAwaiting(callKey)) {
+        if (recordEstimate(ctx, event.provider ?? "", event.model ?? "", runKey, event)) {
+          pending.clearAwaiting(callKey);
+          return;
+        }
+        // Nothing usable in this event. Leave the call marked as awaiting so a
+        // later `model_call_ended` that does carry sizes still completes it.
       }
-      pending.add(runKey, event);
+      pending.add(callKey, event);
     },
 
     /** `model_call_started`: the storm counter from incident #1. */
@@ -350,8 +427,14 @@ export function createBelay(
       if (reading.present) reporting.markMeasured(modelKey);
       else reporting.markMissing(modelKey);
 
-      const runKey = event.runId ?? ctx.runId ?? "unknown";
-      const bytes = pending.take(runKey);
+      const runKey = runKeyOf(ctx, event.runId);
+      // Buffered sizes are keyed by run *and* model. Keying by run alone meant a
+      // model that reports usage took (and threw away) the sizes buffered for a
+      // different model in the same run -- so on a failover, where a run walks
+      // down a chain of models and only some of them report usage, the
+      // unreported calls were silently free. That is precisely the incident this
+      // plugin exists for.
+      const bytes = pending.take(pendingKey(runKey, event.provider, event.model));
 
       if (!reading.present) {
         // No token counts. Estimate from the sizes buffered by model_call_ended,
@@ -365,7 +448,7 @@ export function createBelay(
           }
           // The sizes have not arrived yet. Wait for model_call_ended rather
           // than writing this call off as free.
-          pending.awaitBytes(runKey);
+          pending.awaitBytes(pendingKey(runKey, event.provider, event.model));
           return;
         }
         // Nothing to estimate from: this call is genuinely invisible.
@@ -383,10 +466,13 @@ export function createBelay(
           // where a provider hid its token counts, without touching content.
           logger.warn(`[${PLUGIN_ID}] llm_output shape: ${describeShape(event)}`);
           logger.warn(`[${PLUGIN_ID}] lastAssistant shape: ${describeShape(event.lastAssistant)}`);
-          // Token counts and a cost object: numbers only, no content, so this is
-          // safe to print while diagnosing a provider that meters as zero.
+          // Only the numbers Belay itself understands, re-emitted from its own
+          // normalized reading. Stringifying the raw `usage` object would print
+          // whatever a provider happened to put there -- and this is untrusted
+          // data from another process, on a code path that exists precisely
+          // because a provider's payload was not the shape we expected.
           logger.warn(
-            `[${PLUGIN_ID}] transcript usage values: ${JSON.stringify(usageFrom(event.lastAssistant))}`,
+            `[${PLUGIN_ID}] transcript usage values: ${describeUsage(usageFrom(event.lastAssistant))}`,
           );
         }
         return;
@@ -397,7 +483,7 @@ export function createBelay(
             now: now(),
           })
         : undefined;
-      scopeForUsage.recordUsage(now(), event.runId ?? ctx.runId ?? "unknown", {
+      scopeForUsage.recordUsage(now(), runKey, {
         usd: price ? costOf(reading.usage, price) : 0,
         tokens: reading.tokens,
         // An unknown model is as unpriceable as a missing split: both must count
@@ -414,7 +500,12 @@ export function createBelay(
     },
 
     agentEnd(ctx: AgentCtx): void {
-      if (ctx.runId) meter.scope(ctx.agentId, ctx.sessionKey).endRun(ctx.runId);
+      const runKey = runKeyOf(ctx);
+      meter.scope(ctx.agentId, ctx.sessionKey).endRun(runKey);
+      // Drop any buffered sizes for the run too: without this, a run whose
+      // `llm_output` never arrives holds its bytes until the eviction bound,
+      // where they would be attributed to whichever run is estimated next.
+      pending.dropRun(runKey);
     },
   };
 }
@@ -465,6 +556,20 @@ export function describeShape(value: unknown, depth = 0): string {
  * to "no usage" rather than to a wrong number. It never touches any other
  * property, so message content stays untouched.
  */
+/**
+ * Render a usage object as numbers, and nothing else.
+ *
+ * `JSON.stringify` on the raw object would faithfully print any string a
+ * provider tucked in beside the token counts. Belay's whole claim is that no
+ * content reaches a log line, so the diagnostic prints Belay's own normalized
+ * reading rather than the payload it came from.
+ */
+export function describeUsage(raw: HookUsage | undefined): string {
+  if (raw === undefined) return "none";
+  const { usage, tokens, present, priceable } = readUsage(raw);
+  return JSON.stringify({ ...usage, tokens, present, priceable });
+}
+
 export function usageFrom(value: unknown): HookUsage | undefined {
   if (!value || typeof value !== "object") return undefined;
   const usage = (value as { usage?: unknown }).usage;

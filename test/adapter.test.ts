@@ -5,8 +5,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createBelay, describeShape, guard, usageFrom } from "../src/belay.ts";
+import { createBelay, describeShape, describeUsage, guard, usageFrom } from "../src/belay.ts";
 import { parseConfig } from "../src/config.ts";
+import { Meter } from "../src/meter.ts";
 import { Pauser } from "../src/pauser.ts";
 import type { AlertEvent, Alerter } from "../src/alerts.ts";
 import type { Recorder, Record as RecorderRecord } from "../src/recorder.ts";
@@ -753,4 +754,256 @@ test("a per-minute byte limit catches a context-bloat storm", () => {
     now += 500;
   }
   assert.equal(blockedAt, 9, "blocks once 10 MB has gone out inside a minute");
+});
+
+test("an empty runId does not switch the per-run caps off", () => {
+  // `event.runId ?? ctx.runId ?? "unknown"` accepts "": the spend was metered
+  // into a run literally named "", while `snapshot()` treats "" as falsy and
+  // reads no run at all. The per-run cap then never fires no matter how much
+  // the agent spends, and nothing anywhere says so. Contexts with empty string
+  // ids are common when a field is populated from a template or a default.
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerRunUsd: 0.5 } });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { agentId: "main", runId: "" };
+
+  belay.llmOutput(ctx, {
+    provider: "google",
+    model: "gemini-3.8-flash",
+    usage: { input: 1_000_000 }, // $0.75, over the $0.50 per-run cap
+  });
+
+  const decision = belay.beforeAgentRun(ctx);
+  assert.equal(decision.outcome, "block");
+});
+
+test("a context with no run id at all is still metered per run", () => {
+  // Falling back to the session key keeps one turn's calls together, so the
+  // per-run cap works, and `agent_end` still clears the bucket -- unlike a
+  // shared "unknown" run, which would latch the cap on forever.
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerRunUsd: 0.5 } });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { agentId: "main", sessionKey: "agent:main:main" };
+
+  belay.llmOutput(ctx, {
+    provider: "google",
+    model: "gemini-3.8-flash",
+    usage: { input: 1_000_000 },
+  });
+  assert.equal(belay.beforeAgentRun(ctx).outcome, "block");
+
+  belay.agentEnd(ctx);
+  assert.deepEqual(belay.beforeAgentRun(ctx), { outcome: "pass" }, "the run's total is released");
+});
+
+test("an empty runId still counts identical tool calls", () => {
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { identicalToolCalls: 3 } });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { agentId: "main", runId: "" };
+  const event = { toolName: "fetch", params: { url: "https://example.test/404" } };
+
+  belay.beforeToolCall(ctx, event);
+  belay.beforeToolCall(ctx, event);
+  const third = belay.beforeToolCall(ctx, event);
+  assert.equal(third.block, true);
+});
+
+test("a failover run does not lose the unmetered model's cost", () => {
+  // Buffered request sizes used to be keyed by run alone. On a failover, one run
+  // walks down a chain of models; the moment any of them reported real usage,
+  // its llm_output took *and discarded* the sizes buffered for a different model
+  // in the same run, so that model's call was silently free. This is exactly the
+  // incident in the README -- a failover re-sending a huge context down a chain
+  // of pricier models -- so it is the last place a byte can be allowed to vanish.
+  const { config } = parseConfig({
+    settleAfterRestartMs: 0,
+    estimation: { enabled: true },
+    limits: { spendPerRunUsd: 0.5 },
+  });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { agentId: "main", runId: "r1" };
+
+  // The model that reports nothing finishes its call: 3.5 MB of request payload,
+  // which is $0.75 of gemini at the calibrated ratio.
+  belay.modelCallEnded(ctx, {
+    provider: "google",
+    model: "gemini-3.8-flash",
+    runId: "r1",
+    requestPayloadBytes: 3_500_000,
+  });
+  // A different model in the same run reports usage first.
+  belay.llmOutput(ctx, {
+    provider: "google",
+    model: "gemini-3.8-pro",
+    usage: { input: 10, output: 10 },
+    runId: "r1",
+  });
+  // Now the silent model's llm_output arrives with nothing in it.
+  belay.llmOutput(ctx, { provider: "google", model: "gemini-3.8-flash", runId: "r1" });
+
+  const snap = belay.meter.scope("main").snapshot(T0, "r1");
+  assert.equal(snap.estimatedCalls, 1, "the unmetered call was estimated");
+  assert.ok(snap.runUsd >= 0.75, `expected the 3.5 MB call to be priced, got ${snap.runUsd}`);
+  assert.equal(belay.beforeAgentRun(ctx).outcome, "block");
+});
+
+test("a model_call_ended with no sizes does not cancel a pending estimate", () => {
+  // The first `model_call_ended` can carry no byte counts at all. Clearing the
+  // "waiting for sizes" mark on it meant the later event that *did* carry sizes
+  // was buffered instead of counted, and the call stayed free.
+  const { config } = parseConfig({
+    settleAfterRestartMs: 0,
+    estimation: { enabled: true },
+    limits: { spendPerDayUsd: 100 },
+  });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { agentId: "main", runId: "r1" };
+  const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
+
+  belay.llmOutput(ctx, call);
+  belay.modelCallEnded(ctx, { ...call }); // no sizes reported
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 3_500_000 });
+
+  assert.ok(belay.meter.scope("main").snapshot(T0, "r1").runUsd > 0);
+});
+
+test("a broken alert transport cannot cancel the block it was reporting", () => {
+  // `guard` fails open on a Belay bug, which is right -- but the decision to
+  // block is already made by the time the alert is sent, and the alert is the
+  // part most likely to fail (a logger the host swapped out, a recorder on a
+  // full disk, a transport that throws synchronously). Losing enforcement
+  // because the *notification* failed is the worst possible trade.
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerRunUsd: 0.5 } });
+  const exploding = {
+    notify: () => {
+      throw new Error("transport exploded");
+    },
+  } as unknown as Alerter;
+  const logger = makeLogger();
+  const belay = createBelay(config, logger, () => T0, { alerter: exploding });
+  const ctx = { agentId: "main", runId: "r1" };
+
+  belay.llmOutput(ctx, {
+    provider: "google",
+    model: "gemini-3.8-flash",
+    usage: { input: 1_000_000 },
+    runId: "r1",
+  });
+
+  assert.equal(belay.beforeAgentRun(ctx).outcome, "block", "the breach is still enforced");
+  assert.ok(logger.lines.some((l) => l.includes("enforcing anyway")));
+});
+
+test("the transcript-usage diagnostic prints numbers, never a provider's strings", () => {
+  // This log line only fires when a provider's payload was not the shape we
+  // expected, which is precisely when it is least safe to stringify whatever
+  // arrived. Belay prints its own normalized reading instead.
+  const shape = describeUsage({
+    input: 12,
+    // A provider really can hang extra fields off `usage`, and this one is the
+    // kind of thing that must never reach a log line.
+    prompt: "the user's private message",
+  } as never);
+  assert.ok(!shape.includes("private message"), shape);
+  assert.match(shape, /"input":12/);
+  assert.equal(describeUsage(undefined), "none");
+});
+
+test("a per-agent cap applies on the hooks that carry only a session key", () => {
+  // The scope key recovers "main" from "agent:main:main", so the spend lands in
+  // the right bucket -- but the per-agent *limits* were looked up on
+  // `ctx.agentId` alone, which those hooks do not set. The tighter cap the
+  // operator set for this specific agent therefore quietly reverted to the
+  // looser global one, on exactly the agent they had singled out as expensive.
+  const { config } = parseConfig({
+    settleAfterRestartMs: 0,
+    limits: { spendPerDayUsd: 100 },
+    agents: { main: { spendPerDayUsd: 0.5 } },
+  });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { sessionKey: "agent:main:main", runId: "r1" };
+
+  belay.llmOutput(ctx, {
+    provider: "google",
+    model: "gemini-3.8-flash",
+    usage: { input: 1_000_000 }, // $0.75: under the global cap, over this agent's
+    runId: "r1",
+  });
+
+  assert.equal(belay.meter.scopes().map((s) => s.key).join(), "main");
+  assert.equal(belay.beforeAgentRun(ctx).outcome, "block");
+});
+
+test("a per-agent observe mode applies on those hooks too", () => {
+  // The same lookup, in the direction that hurts a user rather than a budget:
+  // an agent the operator explicitly put in observe mode was enforced against
+  // -- blocking real people's messages on a gateway that had been told not to.
+  const { config } = parseConfig({
+    mode: "enforce",
+    settleAfterRestartMs: 0,
+    limits: { spendPerDayUsd: 0.5 },
+    agents: { "group-bot": { mode: "observe" } },
+  });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { sessionKey: "agent:group-bot:main", runId: "r1" };
+
+  belay.llmOutput(ctx, {
+    provider: "google",
+    model: "gemini-3.8-flash",
+    usage: { input: 1_000_000 },
+    runId: "r1",
+  });
+
+  assert.deepEqual(belay.beforeAgentRun(ctx), { outcome: "pass" }, "observe never blocks");
+});
+
+test("no sequence of junk hook payloads makes a handler throw", () => {
+  // `guard` in index.ts turns a throw into "pass", which is the right failure
+  // mode -- and also a silent one: a handler that throws on some real-world
+  // payload is a guardrail that is off, with one log line to show for it. So the
+  // handlers are expected to be total on their own, and this walks a few
+  // thousand randomized payloads through every hook to say so.
+  const values: unknown[] = [
+    undefined, null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1e308, 1.5,
+    "", "   ", "x", true, false, [], {}, { a: 1 }, "__proto__", "constructor",
+  ];
+  let seed = 20260902;
+  const pick = (): unknown => {
+    // Deterministic PRNG: a failure has to be reproducible to be fixable.
+    seed = (seed * 1103515245 + 12345) % 2 ** 31;
+    return values[seed % values.length];
+  };
+  const text = (): string => String(pick());
+
+  const { config } = parseConfig({
+    settleAfterRestartMs: 0,
+    estimation: { enabled: true },
+    limits: { spendPerDayUsd: 1, identicalToolCalls: 5, requestBytesPerRun: 1000 },
+  });
+  const belay = createBelay(config, makeLogger(), () => T0);
+
+  for (let i = 0; i < 3_000; i += 1) {
+    const ctx = { agentId: text(), sessionKey: text(), runId: text() };
+    belay.modelCallStarted(ctx);
+    belay.llmOutput(ctx, {
+      provider: text(),
+      model: text(),
+      usage: { input: pick() as never, total: pick() as never },
+      lastAssistant: pick(),
+      runId: text(),
+    });
+    belay.modelCallEnded(ctx, {
+      provider: text(),
+      model: text(),
+      requestPayloadBytes: pick() as never,
+      responseStreamBytes: pick() as never,
+    });
+    belay.beforeToolCall(ctx, { toolName: text(), params: pick() });
+    belay.afterToolCall(ctx, { error: pick() });
+    belay.beforeAgentRun(ctx);
+    belay.agentEnd(ctx);
+  }
+  // And the state it built is still serializable and reloadable.
+  const revived = new Meter(config.timeZone);
+  revived.load(JSON.parse(JSON.stringify(belay.meter.toJSON())));
+  assert.ok(revived.scopes().length > 0);
 });

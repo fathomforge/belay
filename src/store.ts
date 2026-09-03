@@ -14,6 +14,7 @@
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeSync, fsyncSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PersistedScope } from "./meter.ts";
+import { isDayKey } from "./windows.ts";
 
 export type StoreData = { version: 1; scopes: PersistedScope[] };
 
@@ -35,10 +36,15 @@ export type StoreData = { version: 1; scopes: PersistedScope[] };
 export function mergeState(a: StoreData | undefined, b: StoreData): StoreData {
   if (!a) return b;
   const byKey = new Map<string, PersistedScope>();
-  for (const scope of a.scopes) if (scope?.key) byKey.set(scope.key, scope);
+  if (!Array.isArray(a.scopes) || !Array.isArray(b.scopes)) return Array.isArray(b.scopes) ? b : a;
+  // Every scope goes through `sanitize`, including the ones only one side has:
+  // a garbage day that is merely *copied* into the output is still a garbage day
+  // that will out-rank a real one on the next flush.
+  for (const scope of a.scopes) if (scope?.key) byKey.set(scope.key, sanitize(scope));
 
-  for (const incoming of b.scopes) {
-    if (!incoming?.key) continue;
+  for (const raw of b.scopes) {
+    if (!raw?.key) continue;
+    const incoming = sanitize(raw);
     const existing = byKey.get(incoming.key);
     if (!existing) {
       byKey.set(incoming.key, incoming);
@@ -59,12 +65,41 @@ export function mergeState(a: StoreData | undefined, b: StoreData): StoreData {
   return { version: 1, scopes: [...byKey.values()] };
 }
 
+/** A persisted scope with its daily totals normalized. */
+function sanitize(scope: PersistedScope): PersistedScope {
+  return {
+    key: scope.key,
+    day: daily(scope.day),
+    ...(scope.dayBytes ? { dayBytes: daily(scope.dayBytes) } : {}),
+    ladder: scope.ladder,
+  };
+}
+
+/**
+ * Normalize one side of a daily total.
+ *
+ * A later day supersedes an earlier one below, so a garbage day string is not
+ * harmless: `"9999-99-99"` sorts above every real date and would silently erase
+ * a real day's spend on every flush, for good. Anything that is not a plausible
+ * `YYYY-MM-DD` therefore becomes "no day recorded", which loses to everything.
+ */
+function daily(value: { day: string; total: number } | undefined): { day: string; total: number } {
+  if (!value || typeof value !== "object" || !isDayKey(value.day)) return { day: "", total: 0 };
+  const total = value.total;
+  // A non-numeric or negative total cannot be maxed meaningfully, and a NaN
+  // would poison every later merge through `Math.max`.
+  return {
+    day: value.day,
+    total: typeof total === "number" && Number.isFinite(total) && total > 0 ? total : 0,
+  };
+}
+
 function mergeDaily(
   a: { day: string; total: number } | undefined,
   b: { day: string; total: number } | undefined,
 ): { day: string; total: number } {
-  const left = a ?? { day: "", total: 0 };
-  const right = b ?? { day: "", total: 0 };
+  const left = daily(a);
+  const right = daily(b);
   // A later calendar day supersedes an earlier one rather than being maxed
   // against it, or yesterday's larger total would leak into today.
   if (left.day !== right.day) return left.day > right.day ? left : right;

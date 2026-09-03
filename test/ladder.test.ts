@@ -152,3 +152,32 @@ test("the shipped default stops at endRun, not pause", () => {
   // default ladder at `pause` would promise an action Belay cannot perform.
   assert.equal(DEFAULT_LADDER.maxRung, "endRun");
 });
+
+test("an unrecognised persisted rung does not disable the ladder", () => {
+  // `RUNG[snapshot.rung]` is `undefined` for anything not in the table, and an
+  // undefined rung makes every comparison in `record` false: the ladder never
+  // climbs, reports itself as "none", and the scope is silently unguarded for
+  // the life of the process. One bad line in a shared state file -- or a rung
+  // name from a future version of Belay -- must not switch enforcement off.
+  const revived = Ladder.fromJSON({ rung: "PAUSE" as never, lastTriggerAt: 0, lastActionAt: 0 }, cfg);
+  const step = revived.record(1_000, "endRun", "spend_day");
+  assert.equal(step.rung, "endRun");
+  assert.equal(step.escalated, true);
+});
+
+test("junk timestamps in persisted state degrade to zero rather than NaN", () => {
+  const revived = Ladder.fromJSON(
+    { rung: "warn", lastTriggerAt: Number.NaN, lastActionAt: "soon" as never },
+    cfg,
+  );
+  assert.deepEqual(revived.toJSON(), { rung: "warn", lastTriggerAt: 0, lastActionAt: 0 });
+  // And it still behaves like a ladder afterwards.
+  assert.equal(revived.record(10_000, "blockTool", "spend_day").rung, "blockTool");
+});
+
+test("a missing snapshot restores a fresh ladder instead of throwing", () => {
+  // Reached when a persisted scope predates the ladder field, or the file was
+  // truncated mid-write. This runs during registration, where a throw costs
+  // every hook that has not been registered yet.
+  assert.equal(Ladder.fromJSON(undefined as never, cfg).rung, "none");
+});

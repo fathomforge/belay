@@ -197,6 +197,23 @@ export class PendingBytes {
     return bytes;
   }
 
+  /**
+   * Forget everything buffered under keys belonging to a finished run.
+   *
+   * Keys are `<run> <provider/model>`, so a run that ended takes its unmatched
+   * sizes with it instead of waiting for the eviction bound -- where they would
+   * eventually be counted against some later run.
+   */
+  dropRun(runId: string): void {
+    const prefix = `${runId} `;
+    for (const key of [...this.#byRun.keys()]) {
+      if (key === runId || key.startsWith(prefix)) this.#byRun.delete(key);
+    }
+    for (const key of [...this.#awaiting]) {
+      if (key === runId || key.startsWith(prefix)) this.#awaiting.delete(key);
+    }
+  }
+
   get size(): number {
     return this.#byRun.size;
   }

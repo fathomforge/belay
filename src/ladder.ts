@@ -174,11 +174,28 @@ export class Ladder {
     };
   }
 
-  static fromJSON(snapshot: LadderSnapshot, config: Partial<LadderConfig> = {}): Ladder {
+  /**
+   * Restore from persisted state, defensively.
+   *
+   * `RUNG[snapshot.rung]` on an unrecognised name yields `undefined`, and an
+   * `undefined` rung poisons every comparison in `record`: `asked > current` is
+   * false for *every* rung, so the ladder never climbs, `rungName(NaN)` reports
+   * "none", and the scope is silently unguarded for the life of the process.
+   * One corrupt line in a shared state file would therefore disable enforcement
+   * for that agent -- exactly the failure this project exists to prevent.
+   */
+  static fromJSON(snapshot: LadderSnapshot | undefined, config: Partial<LadderConfig> = {}): Ladder {
     const l = new Ladder(config);
-    l.#rung = RUNG[snapshot.rung];
-    l.#lastTriggerAt = snapshot.lastTriggerAt;
-    l.#lastActionAt = snapshot.lastActionAt;
+    if (!snapshot || typeof snapshot !== "object") return l;
+    const rung = RUNG[snapshot.rung];
+    l.#rung = typeof rung === "number" ? rung : RUNG.none;
+    l.#lastTriggerAt = ms(snapshot.lastTriggerAt);
+    l.#lastActionAt = ms(snapshot.lastActionAt);
     return l;
   }
+}
+
+/** A persisted timestamp we can do arithmetic with, or 0. */
+function ms(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }

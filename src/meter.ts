@@ -29,6 +29,13 @@ type RunState = {
 
 const MAX_TRACKED_RUNS = 200;
 
+/**
+ * Ceiling on distinct enforcement scopes held in memory (and persisted).
+ * Generous: a gateway has a handful of agents, and this only bites when the
+ * scope key degrades to a per-message session key.
+ */
+const MAX_TRACKED_SCOPES = 2_000;
+
 export type MeterSnapshot = {
   runUsd: number;
   runTokens: number;
@@ -222,7 +229,22 @@ export class ScopeState {
 export function agentIdFromSessionKey(sessionKey: string | undefined): string | undefined {
   if (!sessionKey) return undefined;
   const match = /^agent:([^:]+):/.exec(sessionKey);
-  return match?.[1];
+  return ident(match?.[1]);
+}
+
+/**
+ * An identifier we are willing to key accounting on.
+ *
+ * `??` only rejects null and undefined, so an `agentId` of `""` -- which a hook
+ * context really can carry -- used to sail through as a scope key of its own.
+ * That is the two-buckets-for-one-agent bug again: the hooks that supplied `""`
+ * metered into one scope and the hooks that supplied only a session key metered
+ * into another, and neither half ever reached the cap.
+ */
+export function ident(value: string | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : trimmed;
 }
 
 export type PersistedScope = {
@@ -254,11 +276,27 @@ export class Meter {
    * bucket. Anything unrecognised still falls back to the raw session key.
    */
   scope(agentId: string | undefined, sessionKey?: string): ScopeState {
-    const key = agentId ?? agentIdFromSessionKey(sessionKey) ?? sessionKey ?? "unknown";
-    let s = this.#scopes.get(key);
-    if (!s) {
-      s = new ScopeState(key, this.timeZone, this.#ladder);
-      this.#scopes.set(key, s);
+    const key =
+      ident(agentId) ?? agentIdFromSessionKey(sessionKey) ?? ident(sessionKey) ?? "unknown";
+    const existing = this.#scopes.get(key);
+    if (existing) {
+      // Re-insert so Map iteration order is least-recently-used first. A real
+      // agent is touched constantly and therefore never evicted below.
+      this.#scopes.delete(key);
+      this.#scopes.set(key, existing);
+      return existing;
+    }
+    const s = new ScopeState(key, this.timeZone, this.#ladder);
+    this.#scopes.set(key, s);
+    // Scopes are normally one per agent, so this bound is never reached in
+    // practice. It exists because the fallback key is a session key: a gateway
+    // that mints a fresh session per inbound message, with no agent id on the
+    // hook context, would otherwise grow this map -- and the state file it is
+    // serialized into -- without limit for as long as the process lives.
+    while (this.#scopes.size > MAX_TRACKED_SCOPES) {
+      const oldest = this.#scopes.keys().next().value;
+      if (oldest === undefined || oldest === key) break;
+      this.#scopes.delete(oldest);
     }
     return s;
   }
@@ -271,11 +309,22 @@ export class Meter {
     return this.scopes().map((s) => s.toJSON());
   }
 
+  /**
+   * Restore persisted scopes. Never throws.
+   *
+   * This runs during plugin registration, before the hooks are wired up, so an
+   * exception here does not merely lose the day's totals -- it aborts
+   * registration and leaves the gateway with no guardrail at all, while the
+   * plugin still reports itself as loaded. The state file is shared with other
+   * processes and can be truncated or hand-edited, so every field is treated as
+   * untrusted and a scope that cannot be understood is skipped, not fatal.
+   */
   load(data: PersistedScope[]): void {
+    if (!Array.isArray(data)) return;
     for (const entry of data) {
-      if (!entry || typeof entry.key !== "string") continue;
-      const scope = ScopeState.fromJSON(entry, this.timeZone, this.#ladder);
-      this.#scopes.set(entry.key, scope);
+      const key = ident((entry as PersistedScope | undefined)?.key);
+      if (key === undefined) continue;
+      this.#scopes.set(key, ScopeState.fromJSON({ ...entry, key }, this.timeZone, this.#ladder));
     }
   }
 }

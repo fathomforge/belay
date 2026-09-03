@@ -87,9 +87,16 @@ export default definePluginEntry({
     }
 
     if (config.stateFile) {
-      const { data, error } = loadState(config.stateFile);
-      if (error) logger.warn(`[${PLUGIN_ID}] ${error}`);
-      if (data) belay.meter.load(data.scopes);
+      // Guarded: this runs *before* the hooks below are registered, so anything
+      // that throws here would leave the plugin loaded, announcing itself, and
+      // metering nothing -- the exact failure mode this project keeps finding.
+      // Restoring yesterday's totals is worth having; it is not worth the
+      // guardrail.
+      guard(logger, "load state", () => {
+        const { data, error } = loadState(config.stateFile);
+        if (error) logger.warn(`[${PLUGIN_ID}] ${error}`);
+        if (data) belay.meter.load(data.scopes);
+      });
       const writer = new StateWriter(config.stateFile, (m) => logger.warn(`[${PLUGIN_ID}] ${m}`));
       writer.start(() => ({ version: 1, scopes: belay.meter.toJSON() }));
       // `session_end` allows 2 seconds TOTAL across every session and handler,
