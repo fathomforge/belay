@@ -98,8 +98,13 @@ export class Recorder {
 
   #rotateIfNeeded(): void {
     try {
-      const { size } = statSync(this.config.file);
-      if (size < this.config.maxBytes) return;
+      const stat = statSync(this.config.file);
+      // Only ever rotate a regular file. A directory reports a size of its own
+      // (4096 on Linux, ~96 on macOS), so without this check a misconfigured
+      // path pointing at a directory would be *renamed* out of the way and then
+      // written over. Caught by CI, where the platform difference made it fire.
+      if (!stat.isFile()) return;
+      if (stat.size < this.config.maxBytes) return;
       // One backup only. This is a diagnostic trail, not an archive, and an
       // unbounded log on someone's VM would be a bug we shipped.
       renameSync(this.config.file, `${this.config.file}.1`);

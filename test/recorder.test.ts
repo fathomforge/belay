@@ -125,3 +125,18 @@ test("a pre-existing trail is appended to, not overwritten", () => {
   new Recorder({ file, maxBytes: 1_000_000 }, makeLogger()).write(record);
   assert.equal(parseTrail(readFileSync(file, "utf8")).length, 2);
 });
+
+test("a path that is not a regular file is never rotated away", () => {
+  // Rotation renames the old file aside. Pointed at a directory, that would
+  // move an operator's directory and then write a file in its place. A
+  // directory's own size (4096 on Linux) is enough to pass a naive size check,
+  // so this only ever failed on Linux.
+  const dir = tmp();
+  const logger = makeLogger();
+  const r = new Recorder({ file: dir, maxBytes: 100 }, logger);
+  r.write(record);
+
+  assert.equal(existsSync(dir), true, "the directory must still be there");
+  assert.equal(existsSync(`${dir}.1`), false, "and must not have been rotated");
+  assert.equal(r.enabled, false, "the recorder disables itself instead");
+});
