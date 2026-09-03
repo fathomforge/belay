@@ -109,3 +109,77 @@ export class UsageReporting {
     return [...this.#missing];
   }
 }
+
+/**
+ * Holds request/response sizes until the matching `llm_output` arrives.
+ *
+ * Estimating directly inside `model_call_ended` made the result depend on hook
+ * ordering: a model is only eligible for estimation once it has been *seen*
+ * reporting no usage, which happens in `llm_output`. If that fires second, the
+ * call is never counted -- so the first call after every gateway restart was
+ * silently free, which is exactly the kind of quiet undercount this project
+ * exists to prevent.
+ *
+ * Buffering by run id removes the ordering dependence: sizes accumulate, and
+ * whichever hook runs second does the arithmetic.
+ */
+export class PendingBytes {
+  readonly maxRuns: number;
+  #byRun = new Map<string, CallBytes>();
+  /** Runs whose llm_output already reported no usage and are waiting on sizes. */
+  #awaiting = new Set<string>();
+
+  constructor(maxRuns = 500) {
+    this.maxRuns = maxRuns;
+  }
+
+  /** Record that this run reported no usage and has nothing to estimate from yet. */
+  awaitBytes(runId: string): void {
+    this.#awaiting.add(runId);
+    while (this.#awaiting.size > this.maxRuns) {
+      const oldest = this.#awaiting.values().next().value;
+      if (oldest === undefined) break;
+      this.#awaiting.delete(oldest);
+    }
+  }
+
+  /** True when `llm_output` has already asked for an estimate on this run. */
+  isAwaiting(runId: string): boolean {
+    return this.#awaiting.has(runId);
+  }
+
+  clearAwaiting(runId: string): void {
+    this.#awaiting.delete(runId);
+  }
+
+  /** Accumulate a call's sizes against its run. */
+  add(runId: string, bytes: CallBytes): void {
+    const existing = this.#byRun.get(runId);
+    const merged: CallBytes = {
+      requestPayloadBytes:
+        (existing?.requestPayloadBytes ?? 0) + (bytes.requestPayloadBytes ?? 0),
+      responseStreamBytes:
+        (existing?.responseStreamBytes ?? 0) + (bytes.responseStreamBytes ?? 0),
+    };
+    this.#byRun.set(runId, merged);
+    // A run whose llm_output never arrives must not leak. Map iteration is
+    // insertion-ordered, so the first key is the oldest run.
+    while (this.#byRun.size > this.maxRuns) {
+      const oldest = this.#byRun.keys().next().value;
+      if (oldest === undefined) break;
+      this.#byRun.delete(oldest);
+    }
+  }
+
+  /** Take and clear whatever has accumulated for a run. */
+  take(runId: string): CallBytes | undefined {
+    const bytes = this.#byRun.get(runId);
+    if (bytes) this.#byRun.delete(runId);
+    this.#awaiting.delete(runId);
+    return bytes;
+  }
+
+  get size(): number {
+    return this.#byRun.size;
+  }
+}

@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_ESTIMATION, estimateFromBytes, UsageReporting } from "../src/estimate.ts";
+import {
+  DEFAULT_ESTIMATION,
+  estimateFromBytes,
+  PendingBytes,
+  UsageReporting,
+} from "../src/estimate.ts";
 import { costOf } from "../src/pricing.ts";
 
 test("request and response bytes become input and output tokens", () => {
@@ -88,4 +93,40 @@ test("reporting state is per model, not global", () => {
   assert.equal(r.shouldEstimate("google/gemini-3.8-flash"), true);
   assert.equal(r.shouldEstimate("openai/gpt-5.4"), false);
   assert.deepEqual(r.estimatedModels(), ["google/gemini-3.8-flash"]);
+});
+
+test("sizes accumulate per run and are consumed once", () => {
+  const p = new PendingBytes();
+  p.add("run-1", { requestPayloadBytes: 100, responseStreamBytes: 10 });
+  p.add("run-1", { requestPayloadBytes: 50 });
+  assert.deepEqual(p.take("run-1"), { requestPayloadBytes: 150, responseStreamBytes: 10 });
+  // Taken once, gone: a second llm_output must not re-bill the same sizes.
+  assert.equal(p.take("run-1"), undefined);
+});
+
+test("a run can wait for sizes that have not arrived yet", () => {
+  // llm_output first, model_call_ended second: the estimate must still happen.
+  const p = new PendingBytes();
+  assert.equal(p.isAwaiting("run-1"), false);
+  p.awaitBytes("run-1");
+  assert.equal(p.isAwaiting("run-1"), true);
+  p.clearAwaiting("run-1");
+  assert.equal(p.isAwaiting("run-1"), false);
+});
+
+test("taking sizes also clears any awaiting flag", () => {
+  const p = new PendingBytes();
+  p.awaitBytes("run-1");
+  p.add("run-1", { requestPayloadBytes: 40 });
+  p.take("run-1");
+  assert.equal(p.isAwaiting("run-1"), false);
+});
+
+test("runs whose llm_output never arrives cannot leak memory", () => {
+  const p = new PendingBytes(10);
+  for (let i = 0; i < 100; i += 1) {
+    p.add(`run-${i}`, { requestPayloadBytes: 10 });
+    p.awaitBytes(`run-${i}`);
+  }
+  assert.equal(p.size, 10);
 });

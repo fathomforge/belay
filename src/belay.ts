@@ -19,7 +19,8 @@ import { costOf, priceKey, resolvePrice } from "./pricing.ts";
 import { loadState, StateWriter } from "./store.ts";
 import { readUsage } from "./usage.ts";
 import type { Alerter } from "./alerts.ts";
-import { estimateFromBytes, UsageReporting } from "./estimate.ts";
+import { estimateFromBytes, PendingBytes, UsageReporting } from "./estimate.ts";
+import type { CallBytes } from "./estimate.ts";
 import type { Pauser } from "./pauser.ts";
 import { toRecord } from "./recorder.ts";
 import type { Recorder } from "./recorder.ts";
@@ -87,6 +88,38 @@ export function createBelay(
   const meter = new Meter(config.timeZone, config.ladder);
   const blindnessReported = new Set<string>();
   const reporting = new UsageReporting();
+  const pending = new PendingBytes();
+
+  /**
+   * Record an estimated call. Called from whichever of `llm_output` /
+   * `model_call_ended` completes the pair, so ordering does not matter.
+   */
+  function recordEstimate(
+    ctx: AgentCtx,
+    provider: string,
+    model: string,
+    runKey: string,
+    bytes: CallBytes,
+  ): boolean {
+    const estimate = estimateFromBytes(bytes, config.estimation);
+    if (!estimate.usable) return false;
+    const price = resolvePrice(provider, model, { overrides: config.prices, now: now() });
+    meter.scope(ctx.agentId, ctx.sessionKey).recordUsage(now(), runKey, {
+      usd: price ? costOf(estimate.usage, price) : 0,
+      tokens: estimate.tokens,
+      priceable: price !== undefined,
+      estimated: true,
+    });
+    const key = priceKey(provider, model);
+    if (!blindnessReported.has(`estimating:${key}`)) {
+      blindnessReported.add(`estimating:${key}`);
+      logger.warn(
+        `[${PLUGIN_ID}] estimating cost for ${key} from request size, because it reports no ` +
+          "token usage. Figures are approximate and labelled as estimates.",
+      );
+    }
+    return true;
+  }
   /** Set at construction, which is gateway startup. See `settleAfterRestartMs`. */
   const startedAt = now();
 
@@ -235,33 +268,14 @@ export function createBelay(
       },
     ): void {
       if (!config.estimation.enabled) return;
-      const key = priceKey(event.provider ?? "", event.model ?? "");
-      if (!reporting.shouldEstimate(key)) return;
-
-      const estimate = estimateFromBytes(event, config.estimation);
-      if (!estimate.usable) return;
-
-      const price = resolvePrice(event.provider ?? "", event.model ?? "", {
-        overrides: config.prices,
-        now: now(),
-      });
-      meter.scope(ctx.agentId, ctx.sessionKey).recordUsage(
-        now(),
-        event.runId ?? ctx.runId ?? "unknown",
-        {
-          usd: price ? costOf(estimate.usage, price) : 0,
-          tokens: estimate.tokens,
-          priceable: price !== undefined,
-          estimated: true,
-        },
-      );
-      if (!blindnessReported.has(`estimating:${key}`)) {
-        blindnessReported.add(`estimating:${key}`);
-        logger.warn(
-          `[${PLUGIN_ID}] estimating cost for ${key} from request size, because it reports no ` +
-            "token usage. Figures are approximate and are labelled as estimates.",
-        );
+      const runKey = event.runId ?? ctx.runId ?? "unknown";
+      // If llm_output already reported no usage for this run, complete the pair
+      // now. Otherwise hold the sizes until it does.
+      if (pending.isAwaiting(runKey)) {
+        pending.clearAwaiting(runKey);
+        if (recordEstimate(ctx, event.provider ?? "", event.model ?? "", runKey, event)) return;
       }
+      pending.add(runKey, event);
     },
 
     /** `model_call_started`: the storm counter from incident #1. */
@@ -295,9 +309,25 @@ export function createBelay(
       if (reading.present) reporting.markMeasured(modelKey);
       else reporting.markMissing(modelKey);
 
+      const runKey = event.runId ?? ctx.runId ?? "unknown";
+      const bytes = pending.take(runKey);
+
       if (!reading.present) {
-        // Silence here would be the worst outcome: every spend cap is inert and
-        // nothing says so. Count it, and say it once per model.
+        // No token counts. Estimate from the sizes buffered by model_call_ended,
+        // which is metadata rather than content.
+        if (config.estimation.enabled) {
+          if (
+            bytes &&
+            recordEstimate(ctx, event.provider ?? "", event.model ?? "", runKey, bytes)
+          ) {
+            return;
+          }
+          // The sizes have not arrived yet. Wait for model_call_ended rather
+          // than writing this call off as free.
+          pending.awaitBytes(runKey);
+          return;
+        }
+        // Nothing to estimate from: this call is genuinely invisible.
         scopeForUsage.recordMissingUsage();
         const key = `missing-usage:${event.provider ?? "?"}/${event.model ?? "?"}`;
         if (!blindnessReported.has(key)) {

@@ -637,3 +637,40 @@ test("the settling window is recorded honestly, not hidden", () => {
   belay.beforeAgentRun(ctx);
   assert.match(records[0]?.reason ?? "", /settling after restart: would have been endRun/);
 });
+
+test("estimation works whichever order the two hooks fire in", () => {
+  // Ordering is not guaranteed, and getting this wrong meant the first call
+  // after every gateway restart was silently counted as free.
+  const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
+
+  const forward = createBelay(
+    parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } }).config,
+    makeLogger(),
+    () => T0,
+  );
+  forward.modelCallEnded({ agentId: "main", runId: "r1" }, { ...call, requestPayloadBytes: 4_000_000 });
+  forward.llmOutput({ agentId: "main", runId: "r1" }, call);
+
+  const reverse = createBelay(
+    parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } }).config,
+    makeLogger(),
+    () => T0,
+  );
+  reverse.llmOutput({ agentId: "main", runId: "r1" }, call);
+  reverse.modelCallEnded({ agentId: "main", runId: "r1" }, { ...call, requestPayloadBytes: 4_000_000 });
+
+  assert.equal(forward.meter.scope("main").snapshot(T0, "r1").runUsd, 0.75);
+  assert.equal(reverse.meter.scope("main").snapshot(T0, "r1").runUsd, 0.75, "reverse order too");
+});
+
+test("the very first call after a restart is counted, not written off", () => {
+  // Regression: estimation used to require the model to have been *seen*
+  // reporting nothing first, so call one after every restart was free.
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { agentId: "main", runId: "r1" };
+  const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 400_000 });
+  belay.llmOutput(ctx, call);
+  assert.ok(belay.meter.scope("main").snapshot(T0, "r1").runUsd > 0);
+});
