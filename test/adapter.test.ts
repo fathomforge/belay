@@ -66,7 +66,7 @@ test("a missing usage object never counts as spend", () => {
 });
 
 test("an unknown model is counted as unpriced, not as free, and warns once", () => {
-  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 1 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: true }, limits: { spendPerDayUsd: 1 } });
   const logger = makeLogger();
   const belay = createBelay(config, logger, () => T0);
   const ctx = { agentId: "main", runId: "r1" };
@@ -159,7 +159,7 @@ test("unserialisable tool params do not throw", () => {
 });
 
 test("scoping falls back to the session key when agentId is absent", () => {
-  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: true }, limits: { spendPerDayUsd: 100 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   belay.llmOutput(
     { sessionKey: "telegram:main:123", runId: "r1" },
@@ -184,7 +184,7 @@ test("per-agent caps isolate one agent's overspend from another's", () => {
 });
 
 test("agent_end releases the run without losing the day's spend", () => {
-  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: true }, limits: { spendPerDayUsd: 100 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   belay.llmOutput(ctx, {
@@ -499,7 +499,7 @@ test("describeShape reports field names and types, never values", () => {
 test("usage is read from the assistant transcript entry when the hook field is empty", () => {
   // Real behaviour on a live gateway: llm_output.usage was undefined for Gemini
   // while the transcript entry carried the counts.
-  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: true }, limits: { spendPerDayUsd: 100 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   belay.llmOutput(
     { agentId: "main", runId: "r1" },
@@ -514,7 +514,7 @@ test("usage is read from the assistant transcript entry when the hook field is e
 });
 
 test("the hook's own usage field still wins when present", () => {
-  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: true }, limits: { spendPerDayUsd: 100 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   belay.llmOutput(
     { agentId: "main", runId: "r1" },
@@ -539,7 +539,7 @@ test("a junk transcript entry degrades to no usage rather than a wrong number", 
 test("a provider that reports no usage still gets spend capped, via estimation", () => {
   // The end-to-end version of the live-gateway finding: usage is absent, so
   // cost comes from request size instead, and the cap still fires.
-  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 1 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: true }, limits: { spendPerDayUsd: 1 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
@@ -557,7 +557,7 @@ test("a provider that reports no usage still gets spend capped, via estimation",
 });
 
 test("a model reporting real usage is never estimated on top of it", () => {
-  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: true }, limits: { spendPerDayUsd: 100 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
@@ -581,7 +581,7 @@ test("estimation can be turned off, and then nothing is estimated", () => {
 });
 
 test("an estimated breach says so in the reason", () => {
-  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerRunUsd: 0.5 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: true }, limits: { spendPerRunUsd: 0.5 } });
   let now = T0;
   const belay = createBelay(config, makeLogger(), () => now);
   const ctx = { agentId: "main", runId: "r1" };
@@ -644,7 +644,7 @@ test("estimation works whichever order the two hooks fire in", () => {
   const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
 
   const forward = createBelay(
-    parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } }).config,
+    parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: true }, limits: { spendPerDayUsd: 100 } }).config,
     makeLogger(),
     () => T0,
   );
@@ -652,7 +652,7 @@ test("estimation works whichever order the two hooks fire in", () => {
   forward.llmOutput({ agentId: "main", runId: "r1" }, call);
 
   const reverse = createBelay(
-    parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } }).config,
+    parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: true }, limits: { spendPerDayUsd: 100 } }).config,
     makeLogger(),
     () => T0,
   );
@@ -666,11 +666,81 @@ test("estimation works whichever order the two hooks fire in", () => {
 test("the very first call after a restart is counted, not written off", () => {
   // Regression: estimation used to require the model to have been *seen*
   // reporting nothing first, so call one after every restart was free.
-  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: true }, limits: { spendPerDayUsd: 100 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
   belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 400_000 });
   belay.llmOutput(ctx, call);
   assert.ok(belay.meter.scope("main").snapshot(T0, "r1").runUsd > 0);
+});
+
+test("byte limits are exact and need no estimation at all", () => {
+  // The precise counterpart to a spend cap: byte counts come straight from the
+  // gateway and were verified against real traffic to about 1%, where the
+  // dollar conversion carries roughly +-50%. See docs/CALIBRATION.md.
+  const { config } = parseConfig({
+    settleAfterRestartMs: 0,
+    limits: { requestBytesPerRun: 1_000_000 },
+  });
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now);
+  const ctx = { agentId: "main", runId: "r1" };
+  const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
+
+  assert.equal(config.estimation.enabled, false, "estimation is off by default");
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 600_000 });
+  assert.equal(belay.beforeAgentRun(ctx).outcome, "pass");
+
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 600_000 });
+  now += 1000;
+  const decision = belay.beforeAgentRun(ctx);
+  assert.equal(decision.outcome, "block");
+  if (decision.outcome === "block") {
+    // Reported in human units, and exactly: no "(estimated)" qualifier.
+    assert.match(decision.message, /1\.2 MB/);
+    assert.equal(decision.message.includes("estimated"), false);
+  }
+});
+
+test("byte accounting works with estimation off, so it is provider-independent", () => {
+  const { config } = parseConfig({ settleAfterRestartMs: 0 });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { agentId: "main", runId: "r1" };
+  belay.modelCallEnded(ctx, {
+    provider: "acme",
+    model: "unknown-model",
+    runId: "r1",
+    requestPayloadBytes: 2_500_000,
+  });
+  const snap = belay.meter.scope("main").snapshot(T0, "r1");
+  assert.equal(snap.runBytes, 2_500_000);
+  assert.equal(snap.dayBytes, 2_500_000);
+  assert.equal(snap.bytesPerMinute, 2_500_000);
+  // No dollars claimed for a provider we cannot price and did not estimate.
+  assert.equal(snap.runUsd, 0);
+});
+
+test("a per-minute byte limit catches a context-bloat storm", () => {
+  // Incident #2 shape: a run re-sending a large context over and over. Caught
+  // exactly, with no dependence on the provider reporting usage.
+  const { config } = parseConfig({
+    settleAfterRestartMs: 0,
+    limits: { requestBytesPerMinute: 10_000_000 },
+  });
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now);
+  const ctx = { agentId: "main", runId: "r1" };
+  let blockedAt = -1;
+  for (let i = 0; i < 30; i += 1) {
+    belay.modelCallEnded(ctx, {
+      provider: "google",
+      model: "gemini-3.8-flash",
+      runId: "r1",
+      requestPayloadBytes: 1_000_000,
+    });
+    if (belay.beforeToolCall(ctx, { toolName: "x" }).block && blockedAt === -1) blockedAt = i;
+    now += 500;
+  }
+  assert.equal(blockedAt, 9, "blocks once 10 MB has gone out inside a minute");
 });

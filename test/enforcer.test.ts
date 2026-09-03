@@ -10,6 +10,9 @@ function snap(over: Partial<MeterSnapshot> = {}): MeterSnapshot {
   return {
     runUsd: 0,
     runTokens: 0,
+    runBytes: 0,
+    bytesPerMinute: 0,
+    dayBytes: 0,
     hourUsd: 0,
     dayUsd: 0,
     modelCallsPerMinute: 0,

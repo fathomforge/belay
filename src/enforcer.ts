@@ -25,6 +25,14 @@ export type Surface = "agent_run" | "tool_call" | "model_call";
 
 const USD = (n: number): string => `$${n.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")}`;
 
+/** Bytes in human terms. These figures are exact, so they are worth reading. */
+const BYTES = (n: number): string => {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)} GB`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} MB`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)} kB`;
+  return `${Math.round(n)} B`;
+};
+
 /**
  * Which triggers each surface is allowed to act on.
  *
@@ -33,7 +41,13 @@ const USD = (n: number): string => `$${n.toFixed(4).replace(/0+$/, "").replace(/
  * blocking one call still lets the agent recover and explain itself.
  */
 const SURFACE_TRIGGERS: Record<Surface, ReadonlySet<Trigger>> = {
-  agent_run: new Set<Trigger>(["spend_run", "spend_hour", "spend_day"]),
+  agent_run: new Set<Trigger>([
+    "spend_run",
+    "spend_hour",
+    "spend_day",
+    "request_bytes_run",
+    "request_bytes_day",
+  ]),
   tool_call: new Set<Trigger>([
     "spend_run",
     "spend_hour",
@@ -41,8 +55,11 @@ const SURFACE_TRIGGERS: Record<Surface, ReadonlySet<Trigger>> = {
     "tool_call_rate",
     "identical_tool_call",
     "tool_error_rate",
+    "request_bytes_run",
+    "request_bytes_minute",
+    "request_bytes_day",
   ]),
-  model_call: new Set<Trigger>(["model_call_rate"]),
+  model_call: new Set<Trigger>(["model_call_rate", "request_bytes_minute"]),
 };
 
 /**
@@ -94,6 +111,27 @@ export function evaluate(
     snapshot.runUsd,
     limits.spendPerRunUsd,
     `this run has spent ${USD(snapshot.runUsd)}, reaching the ${USD(limits.spendPerRunUsd ?? 0)} cap${est}`,
+  );
+  // Byte limits are checked before the token-rate ones because they are the
+  // exact measurements: if both fire, the precise reason is the better one to
+  // show an operator.
+  add(
+    "request_bytes_day",
+    snapshot.dayBytes,
+    limits.requestBytesPerDay,
+    `${BYTES(snapshot.dayBytes)} sent to models today, reaching the ${BYTES(limits.requestBytesPerDay ?? 0)} limit`,
+  );
+  add(
+    "request_bytes_run",
+    snapshot.runBytes,
+    limits.requestBytesPerRun,
+    `this run has sent ${BYTES(snapshot.runBytes)} to models, reaching the ${BYTES(limits.requestBytesPerRun ?? 0)} limit`,
+  );
+  add(
+    "request_bytes_minute",
+    snapshot.bytesPerMinute,
+    limits.requestBytesPerMinute,
+    `${BYTES(snapshot.bytesPerMinute)} sent to models in the last minute, reaching the ${BYTES(limits.requestBytesPerMinute ?? 0)} limit`,
   );
   add(
     "identical_tool_call",

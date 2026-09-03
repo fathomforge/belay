@@ -267,8 +267,13 @@ export function createBelay(
         responseStreamBytes?: number;
       },
     ): void {
-      if (!config.estimation.enabled) return;
       const runKey = event.runId ?? ctx.runId ?? "unknown";
+      // Always record the exact size, whatever estimation is set to: byte
+      // limits do not depend on it and are accurate on every provider.
+      meter
+        .scope(ctx.agentId, ctx.sessionKey)
+        .recordRequestBytes(now(), runKey, event.requestPayloadBytes ?? 0);
+      if (!config.estimation.enabled) return;
       // If llm_output already reported no usage for this run, complete the pair
       // now. Otherwise hold the sizes until it does.
       if (pending.isAwaiting(runKey)) {

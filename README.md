@@ -32,7 +32,8 @@ Belay is the layer that notices and steps in — gradually.
 
 | Guard | What it catches |
 |---|---|
-| **Spend caps** | Per run, per hour, per calendar day, per agent |
+| **Request-size limits** | Bytes sent to models per run, per minute, per day — **measured exactly**, on any provider |
+| **Spend caps** | Per run, per hour, per calendar day, per agent (needs a provider that reports token usage) |
 | **Model-call rate** | The storm: dozens of calls a minute from one stuck turn |
 | **Tool-call rate** | Runaway tool use |
 | **Identical-call limit** | The same call repeated across a run — the retry-loop signature |
@@ -222,6 +223,29 @@ each of them:
 - **The provider reported only a token total**, with no input/output split. Those are priced up to
   5× apart, so no honest dollar figure exists.
 
+### Exact limits vs estimated ones
+
+Belay measures two things very differently, and it is worth knowing which is which:
+
+|  | accuracy | works when the provider reports no usage |
+|---|---|---|
+| Rate limits (calls, repeats, errors) | exact | yes |
+| **Request-size limits** (`requestBytesPer*`) | **exact, ~1%** | **yes** |
+| Spend caps from reported usage | exact | no |
+| Spend caps from estimation | **±50%** | yes, opt-in |
+
+If your provider reports token usage, use spend caps. If it does not — and many do not — **use
+request-size limits.** They catch the same failures a spend cap catches (runaway loops, context
+bloat, an agent hammering a model) and they are measured rather than inferred:
+
+```json
+{ "limits": { "requestBytesPerRun": 20000000, "requestBytesPerMinute": 10000000 } }
+```
+
+A rough anchor for choosing numbers: on the gateway this was developed against, an ordinary
+conversational turn sent a few hundred kB, and the runaway incidents in the incident library would
+have pushed tens of MB within a minute.
+
 ### When your provider reports no token usage
 
 Some providers and harnesses report no token counts at all — Belay saw exactly this on a live
@@ -255,8 +279,9 @@ Details worth knowing:
 - **The default divisor (`estimation.bytesPerToken`, 3.5) is calibrated for
   `google/gemini-3.8-flash`.** Every provider has its own tokenizer, so it does not transfer. If
   your traffic skews to prose, raise it toward 5; to JSON and ids, lower it toward 2.5.
-- Turn it off with `"estimation": { "enabled": false }` and accept that spend caps are inert on
-  providers that report nothing.
+- **It is off by default.** Turn it on with `"estimation": { "enabled": true }` when an approximate
+  spend cap is more useful to you than none. Shipping a ±50% number as if it were accounting is not
+  something this project is willing to do by default.
 - **Rate limits involve no estimation at all** and are exact on every provider.
 
 > [!IMPORTANT]

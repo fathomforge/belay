@@ -36,6 +36,19 @@ export type Limits = {
   toolErrorsPerMinute?: number;
   /** Context tokens in a single call -- incident #4's 174k hourly heartbeat. */
   contextTokensPerCall?: number;
+
+  /**
+   * Request payload bytes, measured exactly rather than estimated.
+   *
+   * These are the precise counterpart to the spend caps. Byte counts come
+   * straight from the gateway and were verified against real traffic to about
+   * 1%, whereas converting them to dollars carries roughly +-50% because byte
+   * length does not determine token count (docs/CALIBRATION.md). If you want a
+   * hard, exact ceiling on how much an agent can push at a model, set these.
+   */
+  requestBytesPerRun?: number;
+  requestBytesPerMinute?: number;
+  requestBytesPerDay?: number;
 };
 
 /**
@@ -113,6 +126,9 @@ export const DEFAULT_CONFIG: BelayConfig = {
     identical_tool_call: "blockTool",
     tool_error_rate: "warn",
     failover_context: "blockTool",
+    request_bytes_run: "endRun",
+    request_bytes_minute: "blockTool",
+    request_bytes_day: "endRun",
   },
   prices: {},
   settleAfterRestartMs: 120_000,
@@ -162,6 +178,9 @@ const LIMIT_KEYS = [
   "identicalToolCalls",
   "toolErrorsPerMinute",
   "contextTokensPerCall",
+  "requestBytesPerRun",
+  "requestBytesPerMinute",
+  "requestBytesPerDay",
 ] as const;
 
 function parseLimits(raw: unknown, path: string, issues: ConfigIssue[]): Limits {
@@ -500,11 +519,9 @@ function parseEstimation(raw: unknown, issues: ConfigIssue[]): EstimationConfig 
     return out;
   }
   const src = raw as Record<string, unknown>;
-  // Estimation is on by default: without it, a provider that reports no usage
-  // leaves every spend cap inert, which is most of the product gone. It reads
-  // two integers of transport metadata and no content, so there is nothing to
-  // trade away by leaving it on.
-  if (src["enabled"] === false) out.enabled = false;
+  // Both directions matter now that the default is off: an operator opting in
+  // must actually get estimation, and one opting out must actually lose it.
+  if (typeof src["enabled"] === "boolean") out.enabled = src["enabled"];
   const bytesPerToken = positiveNumber(src["bytesPerToken"], "estimation.bytesPerToken", issues);
   if (bytesPerToken !== undefined) out.bytesPerToken = bytesPerToken;
   return out;

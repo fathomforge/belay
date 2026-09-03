@@ -20,6 +20,8 @@ const HOUR = 60 * MINUTE;
 type RunState = {
   usd: number;
   tokens: number;
+  /** Request payload bytes, measured exactly. See docs/CALIBRATION.md. */
+  bytes: number;
   /** fingerprint -> repeat count, for the identical-call limit. */
   identical: Map<string, number>;
   lastSeen: number;
@@ -30,6 +32,17 @@ const MAX_TRACKED_RUNS = 200;
 export type MeterSnapshot = {
   runUsd: number;
   runTokens: number;
+  /**
+   * Request bytes, measured rather than estimated.
+   *
+   * Byte counts come straight from `model_call_ended` and were verified against
+   * real traffic to about 1%, where a dollar figure derived from them carries
+   * roughly +-50% (docs/CALIBRATION.md). Anything that can be expressed as a
+   * byte limit is therefore enforced far more precisely than as a spend cap.
+   */
+  runBytes: number;
+  bytesPerMinute: number;
+  dayBytes: number;
   hourUsd: number;
   dayUsd: number;
   modelCallsPerMinute: number;
@@ -51,6 +64,8 @@ export class ScopeState {
   #hourUsd = new SlidingWindow(HOUR);
   #dayUsd: DailyTotal;
   #modelCalls = new SlidingWindow(MINUTE);
+  #bytesPerMinute = new SlidingWindow(MINUTE);
+  #dayBytes: DailyTotal;
   #toolCalls = new SlidingWindow(MINUTE);
   #toolErrors = new SlidingWindow(MINUTE);
   #runs = new Map<string, RunState>();
@@ -63,6 +78,9 @@ export class ScopeState {
     this.#dayUsd = restored
       ? DailyTotal.fromJSON(timeZone, restored.day)
       : new DailyTotal(timeZone);
+    this.#dayBytes = restored?.dayBytes
+      ? DailyTotal.fromJSON(timeZone, restored.dayBytes)
+      : new DailyTotal(timeZone);
     // A rung must survive a restart, or an agent could be walked back to "none"
     // simply by bouncing the gateway -- which is exactly what an operator does
     // when an agent is misbehaving.
@@ -72,7 +90,7 @@ export class ScopeState {
   #run(runId: string, now: number): RunState {
     let run = this.#runs.get(runId);
     if (!run) {
-      run = { usd: 0, tokens: 0, identical: new Map(), lastSeen: now };
+      run = { usd: 0, tokens: 0, bytes: 0, identical: new Map(), lastSeen: now };
       this.#runs.set(runId, run);
       // Map iteration is insertion-ordered, so the first key is the oldest run.
       // Runs normally end via `endRun`; this only catches ones whose end we missed.
@@ -121,6 +139,17 @@ export class ScopeState {
     this.#unmetered += 1;
   }
 
+  /**
+   * Record the exact size of a model request. Independent of usage reporting,
+   * so this works identically on every provider.
+   */
+  recordRequestBytes(now: number, runId: string, bytes: number): void {
+    if (!Number.isFinite(bytes) || bytes <= 0) return;
+    this.#run(runId, now).bytes += bytes;
+    this.#bytesPerMinute.add(now, bytes);
+    this.#dayBytes.add(now, bytes);
+  }
+
   recordModelCall(now: number): void {
     this.#modelCalls.add(now);
   }
@@ -150,6 +179,9 @@ export class ScopeState {
     return {
       runUsd: run?.usd ?? 0,
       runTokens: run?.tokens ?? 0,
+      runBytes: run?.bytes ?? 0,
+      bytesPerMinute: this.#bytesPerMinute.sum(now),
+      dayBytes: this.#dayBytes.total(now),
       hourUsd: this.#hourUsd.sum(now),
       dayUsd: this.#dayUsd.total(now),
       modelCallsPerMinute: this.#modelCalls.count(now),
@@ -168,7 +200,12 @@ export class ScopeState {
 
   /** Only cross-session facts are persisted: the day's spend and the ladder rung. */
   toJSON(): PersistedScope {
-    return { key: this.key, day: this.#dayUsd.toJSON(), ladder: this.ladder.toJSON() };
+    return {
+      key: this.key,
+      day: this.#dayUsd.toJSON(),
+      dayBytes: this.#dayBytes.toJSON(),
+      ladder: this.ladder.toJSON(),
+    };
   }
 
   static fromJSON(data: PersistedScope, timeZone: string, ladder?: LadderConfig): ScopeState {
@@ -191,6 +228,7 @@ export function agentIdFromSessionKey(sessionKey: string | undefined): string | 
 export type PersistedScope = {
   key: string;
   day: { day: string; total: number };
+  dayBytes?: { day: string; total: number };
   ladder: ReturnType<Ladder["toJSON"]>;
 };
 

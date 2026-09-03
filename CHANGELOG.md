@@ -21,10 +21,15 @@ in-process with zero runtime dependencies and no network calls except the alerts
   deduplicated, and a persistent breach is re-reported on a slow cadence rather than every time.
 - **Observe mode**, globally or per agent: meter, record and alert, but never block, end or pause.
   A global `observe` always wins over a per-agent `enforce`.
-- **Cost estimation from request size** for providers that report no token usage. Uses transport
+- **Request-size limits** (`requestBytesPerRun` / `PerMinute` / `PerDay`): exact ceilings on the
+  bytes an agent can push at a model. Measured to about 1% and independent of whether the provider
+  reports token usage, so they work everywhere. These are the precise alternative to a spend cap.
+- **Cost estimation from request size**, off by default, for providers that report no token usage. Uses transport
   metadata (`requestPayloadBytes` / `responseStreamBytes`) only, never content. Only models
   observed reporting nothing are estimated, so measured and estimated figures never double-count,
-  and every estimated figure is labelled as one.
+  and every estimated figure is labelled as one. Accuracy was measured against the provider's own
+  tokenizer and is roughly ±50% on realistic content; the full experiment, data and reasoning are
+  published in [docs/CALIBRATION.md](docs/CALIBRATION.md).
 - **Flight recorder**: one JSONL line per decision, rotated, with `belay status` and
   `belay incidents` reading the files directly so they work when the gateway is down.
 - **Alerts** to Telegram and generic webhooks, both opt-in, rate-limited and deduplicated.

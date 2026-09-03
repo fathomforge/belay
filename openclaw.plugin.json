@@ -203,16 +203,16 @@
       "estimation": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Estimate cost from request/response size when a provider reports no token usage. Reads transport metadata only, never content.",
+        "description": "Approximate cost estimation from request size, for providers that report no token usage. Off by default: derived dollar figures carry roughly +-50% on realistic content (see docs/CALIBRATION.md). Prefer the exact requestBytesPer* limits where possible.",
         "properties": {
           "enabled": {
             "type": "boolean",
-            "default": true
+            "default": false
           },
           "bytesPerToken": {
             "type": "number",
             "exclusiveMinimum": 0,
-            "default": 4,
+            "default": 3.5,
             "description": "Bytes of request payload per input token. Errs high on purpose."
           }
         }
@@ -268,6 +268,21 @@
           "contextTokensPerCall": {
             "type": "number",
             "exclusiveMinimum": 0
+          },
+          "requestBytesPerRun": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Exact ceiling on request payload bytes sent to models in one run. Measured, not estimated: accurate to ~1% regardless of provider."
+          },
+          "requestBytesPerMinute": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Exact ceiling on request payload bytes per minute. Measured, not estimated: accurate to ~1% regardless of provider."
+          },
+          "requestBytesPerDay": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Exact ceiling on request payload bytes per calendar day. Measured, not estimated: accurate to ~1% regardless of provider."
           }
         }
       }

@@ -62,7 +62,10 @@ export type Trigger =
   | "tool_call_rate"
   | "identical_tool_call"
   | "tool_error_rate"
-  | "failover_context";
+  | "failover_context"
+  | "request_bytes_run"
+  | "request_bytes_minute"
+  | "request_bytes_day";
 
 /** One decision, as recorded and as acted on. Carries no prompt or output content. */
 export type Decision = {

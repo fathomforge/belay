@@ -41,7 +41,16 @@ export type EstimationConfig = {
   bytesPerToken: number;
 };
 
-export const DEFAULT_ESTIMATION: EstimationConfig = { enabled: true, bytesPerToken: 3.5 };
+/**
+ * Off by default.
+ *
+ * A dollar figure derived from byte counts carries roughly +-50% on realistic
+ * content (docs/CALIBRATION.md), and shipping that as a headline number invites
+ * people to trust it as accounting. The exact alternative -- `requestBytesPer*`
+ * limits -- needs no estimation at all. Turn this on deliberately, when an
+ * approximate spend cap is more useful to you than none.
+ */
+export const DEFAULT_ESTIMATION: EstimationConfig = { enabled: false, bytesPerToken: 3.5 };
 
 /** Bytes reported by `model_call_ended`. Both are optional in practice. */
 export type CallBytes = {
