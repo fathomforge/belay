@@ -59,6 +59,9 @@ export function evaluate(
 ): Breach[] {
   const allowed = SURFACE_TRIGGERS[surface];
   const breaches: Breach[] = [];
+  // Spend built partly from estimates must say so wherever it surfaces: an
+  // operator reading "$2.10" deserves to know whether that was measured.
+  const est = snapshot.estimatedCalls > 0 ? " (estimated from request size)" : "";
 
   const add = (
     trigger: Trigger,
@@ -78,19 +81,19 @@ export function evaluate(
     "spend_day",
     snapshot.dayUsd,
     limits.spendPerDayUsd,
-    `daily spend ${USD(snapshot.dayUsd)} reached the ${USD(limits.spendPerDayUsd ?? 0)} cap`,
+    `daily spend ${USD(snapshot.dayUsd)} reached the ${USD(limits.spendPerDayUsd ?? 0)} cap${est}`,
   );
   add(
     "spend_hour",
     snapshot.hourUsd,
     limits.spendPerHourUsd,
-    `hourly spend ${USD(snapshot.hourUsd)} reached the ${USD(limits.spendPerHourUsd ?? 0)} cap`,
+    `hourly spend ${USD(snapshot.hourUsd)} reached the ${USD(limits.spendPerHourUsd ?? 0)} cap${est}`,
   );
   add(
     "spend_run",
     snapshot.runUsd,
     limits.spendPerRunUsd,
-    `this run has spent ${USD(snapshot.runUsd)}, reaching the ${USD(limits.spendPerRunUsd ?? 0)} cap`,
+    `this run has spent ${USD(snapshot.runUsd)}, reaching the ${USD(limits.spendPerRunUsd ?? 0)} cap${est}`,
   );
   add(
     "identical_tool_call",
@@ -134,5 +137,9 @@ export function spendCapsAreBlind(snapshot: MeterSnapshot, limits: Limits): bool
   // Either failure blinds a spend cap, but they blind it differently: an
   // unpriced call still moves token counters, while an unmetered one is
   // completely invisible.
-  return hasSpendCap && (snapshot.unpricedCalls > 0 || snapshot.unmeteredCalls > 0);
+  // An estimated call is not blind: it produces a real, if approximate, figure.
+  // Unmetered calls only blind a cap while nothing is filling the gap, so once
+  // estimation is contributing, stop telling the operator their caps are broken.
+  const unmeteredAndUnestimated = snapshot.unmeteredCalls > 0 && snapshot.estimatedCalls === 0;
+  return hasSpendCap && (snapshot.unpricedCalls > 0 || unmeteredAndUnestimated);
 }

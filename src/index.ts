@@ -113,6 +113,13 @@ export default definePluginEntry({
     );
 
     api.on(
+      "model_call_ended",
+      (event: Record<string, unknown>, ctx: AgentCtx) => {
+        guard(logger, "model_call_ended", () => belay.modelCallEnded(ctx, event));
+      },
+    );
+
+    api.on(
       "llm_output",
       (event: { usage?: HookUsage }, ctx: AgentCtx) => {
         guard(logger, "llm_output", () => belay.llmOutput(ctx, event));

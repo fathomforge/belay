@@ -533,3 +533,65 @@ test("a junk transcript entry degrades to no usage rather than a wrong number", 
   assert.equal(usageFrom({ usage: "not an object" }), undefined);
   assert.deepEqual(usageFrom({ usage: { input: 5 } }), { input: 5 });
 });
+
+test("a provider that reports no usage still gets spend capped, via estimation", () => {
+  // The end-to-end version of the live-gateway finding: usage is absent, so
+  // cost comes from request size instead, and the cap still fires.
+  const { config } = parseConfig({ limits: { spendPerDayUsd: 1 } });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { agentId: "main", runId: "r1" };
+  const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
+
+  // First call reports nothing: that is what marks the model as unmetered.
+  belay.llmOutput(ctx, call);
+  assert.equal(belay.meter.scope("main").snapshot(T0, "r1").runUsd, 0);
+
+  // Subsequent calls are estimated from bytes. 4 MB of request payload at
+  // 4 bytes/token is 1M input tokens, which is $0.75 at intro pricing.
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 4_000_000 });
+  const snap = belay.meter.scope("main").snapshot(T0, "r1");
+  assert.equal(snap.runUsd, 0.75);
+  assert.equal(snap.estimatedCalls, 1);
+});
+
+test("a model reporting real usage is never estimated on top of it", () => {
+  const { config } = parseConfig({ limits: { spendPerDayUsd: 100 } });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { agentId: "main", runId: "r1" };
+  const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
+
+  belay.llmOutput(ctx, { ...call, usage: { input: 1_000_000 } });
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 4_000_000 });
+
+  const snap = belay.meter.scope("main").snapshot(T0, "r1");
+  assert.equal(snap.runUsd, 0.75, "measured only, not measured + estimated");
+  assert.equal(snap.estimatedCalls, 0);
+});
+
+test("estimation can be turned off, and then nothing is estimated", () => {
+  const { config } = parseConfig({ estimation: { enabled: false } });
+  const belay = createBelay(config, makeLogger(), () => T0);
+  const ctx = { agentId: "main", runId: "r1" };
+  const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
+  belay.llmOutput(ctx, call);
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 4_000_000 });
+  assert.equal(belay.meter.scope("main").snapshot(T0, "r1").runUsd, 0);
+});
+
+test("an estimated breach says so in the reason", () => {
+  const { config } = parseConfig({ limits: { spendPerRunUsd: 0.5 } });
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now);
+  const ctx = { agentId: "main", runId: "r1" };
+  const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
+  belay.llmOutput(ctx, call);
+  belay.modelCallEnded(ctx, { ...call, requestPayloadBytes: 4_000_000 });
+
+  now += 1000;
+  const decision = belay.beforeAgentRun(ctx);
+  assert.equal(decision.outcome, "block");
+  if (decision.outcome === "block") {
+    // An operator reading a dollar figure deserves to know it was estimated.
+    assert.match(decision.message, /estimated from request size/);
+  }
+});

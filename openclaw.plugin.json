@@ -199,6 +199,23 @@
             "description": "Rotate to <file>.1 past this size. One backup kept."
           }
         }
+      },
+      "estimation": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Estimate cost from request/response size when a provider reports no token usage. Reads transport metadata only, never content.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "bytesPerToken": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "default": 4,
+            "description": "Bytes of request payload per input token. Errs high on purpose."
+          }
+        }
       }
     },
     "$defs": {

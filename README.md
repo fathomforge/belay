@@ -218,19 +218,39 @@ haven't. A meter that trusted those numbers would report $0.00 and enforce nothi
 Three situations produce an honest "I don't know" rather than a wrong number, and Belay warns about
 each of them:
 
-- **Your provider reports no token usage at all.** This is common — check with
-  `openclaw status --usage`. If it says *"no provider usage available"*, then no spend cap can
-  work, for Belay or anything else, because there are no numbers to cap. Belay will log
-  `<provider>/<model> reported no token usage; spend caps cannot see these calls.`
 - **The model isn't in the price table** and you haven't set a `prices` override.
 - **The provider reported only a token total**, with no input/output split. Those are priced up to
   5× apart, so no honest dollar figure exists.
 
+### When your provider reports no token usage
+
+Some providers and harnesses report no token counts at all — Belay saw exactly this on a live
+gateway, where `llm_output.usage` was `undefined` and the transcript entry's usage was all zeros.
+A spend cap with no numbers is inert, so Belay falls back to **estimating cost from request size**.
+
+`model_call_ended` carries `requestPayloadBytes` and `responseStreamBytes` — the *size* of the
+request and response, never their content — and roughly 4 bytes of JSON payload corresponds to one
+token. Belay converts, prices the result normally, and labels every figure it produces:
+
+```
+this run has spent $0.62, reaching the $0.50 cap (estimated from request size)
+```
+
+Details worth knowing:
+
+- **It only estimates models it has actually seen report nothing.** A model that reports real usage
+  is trusted permanently and is never estimated on top of, so nothing is ever double-counted.
+- **It errs high.** JSON payloads carry structural overhead, so the byte count exceeds the true
+  token count. A cap that trips slightly early is a much cheaper mistake than one that never trips.
+- **It reads two integers of transport metadata.** No prompt, no reply, no tool parameters, and no
+  extra hook permissions.
+- Tune with `estimation.bytesPerToken` (default 4), or turn it off with
+  `"estimation": { "enabled": false }` and accept that spend caps will be inert on such providers.
+
 > [!IMPORTANT]
-> **Rate limits do not depend on usage reporting.** Model-call storms, tool-call rates, identical
-> repeated calls and error storms are all counted directly, so they work even when your provider
-> reports nothing. If your gateway has no usage data, those are still worth having — they're what
-> catches a runaway loop, which is the failure that costs the most.
+> **Rate limits never depend on usage reporting at all.** Model-call storms, tool-call rates,
+> identical repeated calls and error storms are counted directly, so they work regardless — and
+> they're what catch a runaway loop, which is usually the failure that costs the most.
 
 ## Requirements
 

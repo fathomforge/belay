@@ -41,6 +41,8 @@ export type MeterSnapshot = {
   unpricedCalls: number;
   /** Calls that reported no usage at all -- see `recordMissingUsage`. */
   unmeteredCalls: number;
+  /** Calls whose cost was estimated from request size rather than measured. */
+  estimatedCalls: number;
 };
 
 export class ScopeState {
@@ -54,6 +56,7 @@ export class ScopeState {
   #runs = new Map<string, RunState>();
   #unpriced = 0;
   #unmetered = 0;
+  #estimated = 0;
 
   constructor(key: string, timeZone: string, ladder?: LadderConfig, restored?: PersistedScope) {
     this.key = key;
@@ -92,8 +95,9 @@ export class ScopeState {
   recordUsage(
     now: number,
     runId: string,
-    reading: { usd: number; tokens: number; priceable: boolean },
+    reading: { usd: number; tokens: number; priceable: boolean; estimated?: boolean },
   ): void {
+    if (reading.estimated) this.#estimated += 1;
     const run = this.#run(runId, now);
     run.tokens += reading.tokens;
     if (reading.priceable) {
@@ -154,6 +158,7 @@ export class ScopeState {
       maxIdenticalCalls: maxIdentical,
       unpricedCalls: this.#unpriced,
       unmeteredCalls: this.#unmetered,
+      estimatedCalls: this.#estimated,
     };
   }
 

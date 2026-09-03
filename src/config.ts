@@ -8,6 +8,8 @@
  */
 import { DEFAULT_ALERTS } from "./alerts.ts";
 import type { AlertsConfig } from "./alerts.ts";
+import { DEFAULT_ESTIMATION } from "./estimate.ts";
+import type { EstimationConfig } from "./estimate.ts";
 import { DEFAULT_LADDER } from "./ladder.ts";
 import type { LadderConfig } from "./ladder.ts";
 import { DEFAULT_PAUSER } from "./pauser.ts";
@@ -64,6 +66,8 @@ export type BelayConfig = {
   prices: Record<string, ModelPrice>;
   /** Absolute path for cross-session state. Empty string disables persistence. */
   stateFile: string;
+  /** Cost estimation from request size, for providers that report no usage. */
+  estimation: EstimationConfig;
   alerts: AlertsConfig;
   pause: PauserConfig;
   recorder: RecorderConfig;
@@ -102,6 +106,7 @@ export const DEFAULT_CONFIG: BelayConfig = {
   },
   prices: {},
   stateFile: "",
+  estimation: DEFAULT_ESTIMATION,
   alerts: DEFAULT_ALERTS,
   pause: DEFAULT_PAUSER,
   recorder: DEFAULT_RECORDER,
@@ -284,6 +289,7 @@ export function parseConfig(raw: unknown): ParsedConfig {
       rungs: { ...DEFAULT_CONFIG.rungs },
       prices,
       stateFile: typeof src["stateFile"] === "string" ? src["stateFile"] : "",
+      estimation: parseEstimation(src["estimation"], issues),
       alerts: parseAlerts(src["alerts"], issues),
       pause,
       recorder: parseRecorder(src["recorder"], issues),
@@ -451,5 +457,23 @@ function parseRecorder(raw: unknown, issues: ConfigIssue[]): RecorderConfig {
   if (file) out.file = file;
   const maxBytes = positiveNumber(src["maxBytes"], "recorder.maxBytes", issues);
   if (maxBytes !== undefined) out.maxBytes = maxBytes;
+  return out;
+}
+
+function parseEstimation(raw: unknown, issues: ConfigIssue[]): EstimationConfig {
+  const out: EstimationConfig = { ...DEFAULT_ESTIMATION };
+  if (raw === undefined) return out;
+  if (typeof raw !== "object" || raw === null) {
+    issues.push({ path: "estimation", message: "expected an object" });
+    return out;
+  }
+  const src = raw as Record<string, unknown>;
+  // Estimation is on by default: without it, a provider that reports no usage
+  // leaves every spend cap inert, which is most of the product gone. It reads
+  // two integers of transport metadata and no content, so there is nothing to
+  // trade away by leaving it on.
+  if (src["enabled"] === false) out.enabled = false;
+  const bytesPerToken = positiveNumber(src["bytesPerToken"], "estimation.bytesPerToken", issues);
+  if (bytesPerToken !== undefined) out.bytesPerToken = bytesPerToken;
   return out;
 }

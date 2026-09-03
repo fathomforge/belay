@@ -19,6 +19,7 @@ import { costOf, priceKey, resolvePrice } from "./pricing.ts";
 import { loadState, StateWriter } from "./store.ts";
 import { readUsage } from "./usage.ts";
 import type { Alerter } from "./alerts.ts";
+import { estimateFromBytes, UsageReporting } from "./estimate.ts";
 import type { Pauser } from "./pauser.ts";
 import { toRecord } from "./recorder.ts";
 import type { Recorder } from "./recorder.ts";
@@ -85,6 +86,7 @@ export function createBelay(
 ) {
   const meter = new Meter(config.timeZone, config.ladder);
   const blindnessReported = new Set<string>();
+  const reporting = new UsageReporting();
 
   /**
    * Ask the policy what should happen, and move the ladder if anything breached.
@@ -199,6 +201,55 @@ export function createBelay(
       }
     },
 
+    /**
+     * `model_call_ended`: the fallback cost source.
+     *
+     * Carries `requestPayloadBytes` and `responseStreamBytes` -- the *size* of
+     * the request and response, never their content. For a provider that has
+     * been observed reporting no token usage, this is what keeps spend caps
+     * working. Models that do report usage are never estimated, so nothing is
+     * ever counted twice.
+     */
+    modelCallEnded(
+      ctx: AgentCtx,
+      event: {
+        provider?: string;
+        model?: string;
+        runId?: string;
+        requestPayloadBytes?: number;
+        responseStreamBytes?: number;
+      },
+    ): void {
+      if (!config.estimation.enabled) return;
+      const key = priceKey(event.provider ?? "", event.model ?? "");
+      if (!reporting.shouldEstimate(key)) return;
+
+      const estimate = estimateFromBytes(event, config.estimation);
+      if (!estimate.usable) return;
+
+      const price = resolvePrice(event.provider ?? "", event.model ?? "", {
+        overrides: config.prices,
+        now: now(),
+      });
+      meter.scope(ctx.agentId, ctx.sessionKey).recordUsage(
+        now(),
+        event.runId ?? ctx.runId ?? "unknown",
+        {
+          usd: price ? costOf(estimate.usage, price) : 0,
+          tokens: estimate.tokens,
+          priceable: price !== undefined,
+          estimated: true,
+        },
+      );
+      if (!blindnessReported.has(`estimating:${key}`)) {
+        blindnessReported.add(`estimating:${key}`);
+        logger.warn(
+          `[${PLUGIN_ID}] estimating cost for ${key} from request size, because it reports no ` +
+            "token usage. Figures are approximate and are labelled as estimates.",
+        );
+      }
+    },
+
     /** `model_call_started`: the storm counter from incident #1. */
     modelCallStarted(ctx: AgentCtx): void {
       meter.scope(ctx.agentId, ctx.sessionKey).recordModelCall(now());
@@ -226,6 +277,10 @@ export function createBelay(
       // Both shapes are the same normalized bucket names.
       const reading = readUsage(event.usage ?? usageFrom(event.lastAssistant));
       const scopeForUsage = meter.scope(ctx.agentId, ctx.sessionKey);
+      const modelKey = priceKey(event.provider ?? "", event.model ?? "");
+      if (reading.present) reporting.markMeasured(modelKey);
+      else reporting.markMissing(modelKey);
+
       if (!reading.present) {
         // Silence here would be the worst outcome: every spend cap is inert and
         // nothing says so. Count it, and say it once per model.
@@ -234,8 +289,10 @@ export function createBelay(
         if (!blindnessReported.has(key)) {
           blindnessReported.add(key);
           logger.warn(
-            `[${PLUGIN_ID}] ${event.provider ?? "?"}/${event.model ?? "?"} reported no token usage; ` +
-              "spend caps cannot see these calls. Rate limits still apply.",
+            `[${PLUGIN_ID}] ${event.provider ?? "?"}/${event.model ?? "?"} reports no token usage` +
+              (config.estimation.enabled
+                ? "; falling back to estimating cost from request size."
+                : "; spend caps cannot see these calls. Set estimation.enabled to fix this."),
           );
           // Field *names* and value *types* only -- never values. Enough to find
           // where a provider hid its token counts, without touching content.
