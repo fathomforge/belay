@@ -336,3 +336,62 @@ test("effects only fire on a new rung, so a storm is one alert per rung", async 
   }
   assert.equal(alerts.length, 1, "300 identical failures produce one alert");
 });
+
+test("observe mode never blocks, however badly the agent behaves", async () => {
+  // The posture for a first install on a gateway with real users on it.
+  const { config } = parseConfig({
+    mode: "observe",
+    limits: { spendPerRunUsd: 0.01, identicalToolCalls: 2, modelCallsPerMinute: 2 },
+    pause: { enabled: true, channel: "telegram", accountId: "acct-1" },
+  });
+
+  const records: RecorderRecord[] = [];
+  const alerts: AlertEvent[] = [];
+  const stops: string[] = [];
+  const belay = createBelay(config, makeLogger(), () => (now += 61_000), {
+    recorder: { write: (r: RecorderRecord) => records.push(r) } as unknown as Recorder,
+    alerter: {
+      notify: async (e: AlertEvent) => {
+        alerts.push(e);
+      },
+    } as unknown as Alerter,
+    pauser: new Pauser(
+      { enabled: true },
+      async (m) => {
+        stops.push(m);
+        return { ok: true };
+      },
+      makeLogger(),
+    ),
+  });
+
+  let now = T0;
+  const ctx = { agentId: "main", runId: "r1", channel: "telegram", accountId: "acct-1" };
+  belay.llmOutput(ctx, {
+    provider: "google",
+    model: "gemini-3.8-flash",
+    usage: { input: 1_000_000 },
+    runId: "r1",
+  });
+
+  for (let i = 0; i < 20; i += 1) {
+    assert.equal(belay.beforeAgentRun(ctx).outcome, "pass", "a run is never blocked");
+    assert.equal(
+      belay.beforeToolCall(ctx, { toolName: "web_fetch", params: { url: "a" } }).block,
+      undefined,
+      "a tool call is never blocked",
+    );
+    belay.modelCallStarted(ctx);
+  }
+  await new Promise((r) => setTimeout(r, 5));
+
+  // ...but the operator still finds out exactly what would have happened.
+  assert.ok(records.length > 0, "breaches are still recorded");
+  assert.ok(alerts.length > 0, "the operator is still alerted");
+  assert.equal(
+    records.every((r) => r.action === "logged"),
+    true,
+    "every recorded action is a log, never a block",
+  );
+  assert.deepEqual(stops, [], "no account is ever stopped in observe mode");
+});

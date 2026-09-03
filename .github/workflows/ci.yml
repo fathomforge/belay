@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the floor declared in package.json engines; 24 matches what the
+        # OpenClaw container runs. Both must stay green.
+        node: ["20", "22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # `npm ci --ignore-scripts`: this project runs no install scripts, and CI
+      # should fail if a dependency ever introduces one.
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+
+      - name: No runtime dependencies
+        # The whole trust argument rests on this. Fail loudly if it ever changes.
+        run: |
+          COUNT=$(node -p "Object.keys(require('./package.json').dependencies||{}).length")
+          echo "runtime dependencies: $COUNT"
+          test "$COUNT" -eq 0
+
+      - name: No install scripts
+        run: |
+          node -e "
+            const p = require('./package.json');
+            const banned = ['preinstall','install','postinstall','prepare'];
+            const found = banned.filter((s) => p.scripts?.[s]);
+            if (found.length) { console.error('install scripts present:', found); process.exit(1); }
+            console.log('no install scripts');
+          "
+
+      - run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Package contents
+        run: npm pack --dry-run
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # The same guard that runs on every local commit, run again against the
+      # full diff of the PR so nothing lands through a --no-verify.
+      - name: Scan for secrets and personal data
+        run: |
+          git diff --name-only origin/${{ github.base_ref || 'main' }}...HEAD > /dev/null 2>&1 || true
+          git reset --soft $(git rev-list --max-parents=0 HEAD)
+          node scripts/check-secrets.mjs

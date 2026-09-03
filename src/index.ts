@@ -65,6 +65,14 @@ export default definePluginEntry({
 
     const belay = createBelay(config, logger, Date.now, effects);
 
+    if (config.mode === "observe") {
+      logger.info(
+        `[${PLUGIN_ID}] OBSERVE MODE: nothing will be blocked, ended or paused. ` +
+          "Belay will only report what it would have done. Switch to " +
+          'mode: "enforce" once the reports look right.',
+      );
+    }
+
     if (config.stateFile) {
       const { data, error } = loadState(config.stateFile);
       if (error) logger.warn(`[${PLUGIN_ID}] ${error}`);
@@ -108,6 +116,7 @@ export default definePluginEntry({
 
     logger.info(
       `[${PLUGIN_ID}] active: caps=${JSON.stringify(config.limits)} tz=${config.timeZone} ` +
+        `mode=${config.mode} ` +
         `agents=${Object.keys(config.agents).length} ` +
         `alerts=${transports.map((t) => t.name).join(",") || "log-only"} ` +
         `recorder=${config.recorder.file ? "on" : "off"} ` +

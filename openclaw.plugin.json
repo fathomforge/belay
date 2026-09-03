@@ -13,6 +13,15 @@
         "type": "boolean",
         "default": true
       },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "observe",
+          "enforce"
+        ],
+        "default": "enforce",
+        "description": "observe: meter, record and alert, but never block, end or pause. Use this for the first week on a gateway with real users. enforce: act on breaches."
+      },
       "timeZone": {
         "type": "string",
         "description": "IANA timezone for daily rollover. Set this to your own zone, not the container's.",

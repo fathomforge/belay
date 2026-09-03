@@ -36,8 +36,16 @@ export type Limits = {
   contextTokensPerCall?: number;
 };
 
+/**
+ * `observe` meters, records and alerts, but never blocks, ends or pauses
+ * anything. It is the posture for a first install on a gateway with real users
+ * on it: you find out what Belay *would* have done before it can do it.
+ */
+export type Mode = "observe" | "enforce";
+
 export type BelayConfig = {
   enabled: boolean;
+  mode: Mode;
   /** IANA zone for daily rollover. Never read from the process -- see incident #5. */
   timeZone: string;
   limits: Limits;
@@ -65,6 +73,7 @@ export type BelayConfig = {
  */
 export const DEFAULT_CONFIG: BelayConfig = {
   enabled: true,
+  mode: "enforce",
   timeZone: "UTC",
   limits: {
     modelCallsPerMinute: 30,
@@ -216,9 +225,32 @@ export function parseConfig(raw: unknown): ParsedConfig {
     }
   }
 
+  let mode: Mode = DEFAULT_CONFIG.mode;
+  const rawMode = src["mode"];
+  if (typeof rawMode === "string") {
+    if (rawMode === "observe" || rawMode === "enforce") mode = rawMode;
+    else issues.push({ path: "mode", message: `expected "observe" or "enforce", got ${JSON.stringify(rawMode)}` });
+  }
+
+  const pause = parsePause(src["pause"], issues);
+  if (mode === "observe") {
+    // Belt and braces. Capping the ladder is what actually prevents a block,
+    // but an operator who wrote mode:"observe" must not be able to be surprised
+    // by an account going silent because pause was also enabled.
+    ladder.maxRung = "warn";
+    if (pause.enabled) {
+      issues.push({
+        path: "pause.enabled",
+        message: 'ignored while mode is "observe": nothing is paused in observe mode',
+      });
+      pause.enabled = false;
+    }
+  }
+
   return {
     config: {
       enabled: src["enabled"] !== false,
+      mode,
       timeZone,
       limits,
       agents,
@@ -227,7 +259,7 @@ export function parseConfig(raw: unknown): ParsedConfig {
       prices,
       stateFile: typeof src["stateFile"] === "string" ? src["stateFile"] : "",
       alerts: parseAlerts(src["alerts"], issues),
-      pause: parsePause(src["pause"], issues),
+      pause,
       recorder: parseRecorder(src["recorder"], issues),
     },
     issues,

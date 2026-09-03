@@ -118,3 +118,27 @@ test("pause enabled without a target warns that it may not be able to act", () =
   const { issues } = parseConfig({ pause: { enabled: true } });
   assert.match(issues.map((i) => i.message).join(" "), /only pause when the triggering hook/);
 });
+
+test("observe mode caps the ladder so nothing can ever be blocked", () => {
+  const { config } = parseConfig({ mode: "observe", limits: { spendPerDayUsd: 0.01 } });
+  assert.equal(config.mode, "observe");
+  // The ladder ceiling is the actual mechanism: `warn` never blocks a tool,
+  // never ends a run, never pauses an account.
+  assert.equal(config.ladder.maxRung, "warn");
+});
+
+test("observe mode overrides an enabled pauser rather than trusting the operator", () => {
+  const { config, issues } = parseConfig({
+    mode: "observe",
+    pause: { enabled: true, channel: "telegram", accountId: "a1" },
+  });
+  assert.equal(config.pause.enabled, false);
+  assert.match(issues.map((i) => i.message).join(" "), /nothing is paused in observe mode/);
+});
+
+test("enforce is the default, and an unknown mode falls back to it loudly", () => {
+  assert.equal(parseConfig({}).config.mode, "enforce");
+  const { config, issues } = parseConfig({ mode: "dry-run" });
+  assert.equal(config.mode, "enforce");
+  assert.match(issues.map((i) => i.message).join(" "), /expected "observe" or "enforce"/);
+});
