@@ -1,5 +1,8 @@
 node_modules/
 dist/
+# npm pack output: a build artifact, and binary, so it would also be unscannable
+# by scripts/check-secrets.mjs.
+*.tgz
 coverage/
 *.log
 .env

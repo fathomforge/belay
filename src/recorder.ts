@@ -124,8 +124,12 @@ export function toRecord(
   limit: number,
   reason: string,
 ): Record {
+  // The top rung records "ended", not "paused". Reaching it certainly ends the
+  // run; whether the account also stopped is not known until the gateway
+  // answers, and a trail that claims a pause which failed is the same lie the
+  // alerts used to tell. A successful pause is written as its own record.
   const action: Record["action"] =
-    rung === "pause" ? "paused" : rung === "endRun" ? "ended" : rung === "blockTool" ? "blocked" : "logged";
+    rung === "endRun" || rung === "pause" ? "ended" : rung === "blockTool" ? "blocked" : "logged";
   return {
     t: new Date(at).toISOString(),
     scope,

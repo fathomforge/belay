@@ -22,7 +22,8 @@ test("toRecord maps each rung to what actually happened", () => {
   assert.equal(toRecord(at, "s", "warn", "spend_run", 1, 1, "r").action, "logged");
   assert.equal(toRecord(at, "s", "blockTool", "spend_run", 1, 1, "r").action, "blocked");
   assert.equal(toRecord(at, "s", "endRun", "spend_run", 1, 1, "r").action, "ended");
-  assert.equal(toRecord(at, "s", "pause", "spend_run", 1, 1, "r").action, "paused");
+  // "pause" records as "ended": see the dedicated test below for why.
+  assert.equal(toRecord(at, "s", "pause", "spend_run", 1, 1, "r").action, "ended");
 });
 
 test("recording is off unless a file is configured", () => {
@@ -115,7 +116,7 @@ test("a real trail round-trips through the file", () => {
 
   const trail = parseTrail(readFileSync(file, "utf8"));
   assert.equal(trail.length, 2);
-  assert.equal(trail[1]?.action, "paused");
+  assert.equal(trail[1]?.action, "ended");
   assert.equal(trail[1]?.observed, 40);
 });
 
@@ -139,4 +140,12 @@ test("a path that is not a regular file is never rotated away", () => {
   assert.equal(existsSync(dir), true, "the directory must still be there");
   assert.equal(existsSync(`${dir}.1`), false, "and must not have been rotated");
   assert.equal(r.enabled, false, "the recorder disables itself instead");
+});
+
+test("reaching the pause rung records an ended run, not a completed pause", () => {
+  // Whether the account actually stopped is not known when the decision is
+  // made. A trail claiming "paused" for an attempt that failed is the same
+  // false claim the alerts used to make -- and the trail is the evidence an
+  // operator reaches for afterwards, so it has to be true.
+  assert.equal(toRecord(T0, "s", "pause", "spend_day", 3, 2, "r").action, "ended");
 });
