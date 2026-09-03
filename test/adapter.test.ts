@@ -24,13 +24,13 @@ function makeLogger() {
 const T0 = Date.parse("2026-09-02T17:00:00Z");
 
 test("a run under every cap passes", () => {
-  const { config } = parseConfig({ limits: { spendPerDayUsd: 5 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 5 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   assert.deepEqual(belay.beforeAgentRun({ agentId: "main", runId: "r1" }), { outcome: "pass" });
 });
 
 test("llm_output meters real usage and the daily cap then blocks the run", () => {
-  const { config } = parseConfig({ limits: { spendPerDayUsd: 0.5 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 0.5 } });
   let now = T0;
   const belay = createBelay(config, makeLogger(), () => now);
   const ctx = { agentId: "main", runId: "r1" };
@@ -49,13 +49,13 @@ test("llm_output meters real usage and the daily cap then blocks the run", () =>
   if (decision.outcome === "block") {
     // `reason` is plugin-internal per the SDK; `message` is what a user may see.
     assert.equal(decision.reason, "belay:endRun");
-    assert.match(decision.message, /Paused by Belay/);
+    assert.match(decision.message, /Belay stopped this run/);
     assert.equal(decision.category, "cost_limit");
   }
 });
 
 test("a missing usage object never counts as spend", () => {
-  const { config } = parseConfig({ limits: { spendPerDayUsd: 0.01 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 0.01 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   for (let i = 0; i < 50; i += 1) {
@@ -66,7 +66,7 @@ test("a missing usage object never counts as spend", () => {
 });
 
 test("an unknown model is counted as unpriced, not as free, and warns once", () => {
-  const { config } = parseConfig({ limits: { spendPerDayUsd: 1 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 1 } });
   const logger = makeLogger();
   const belay = createBelay(config, logger, () => T0);
   const ctx = { agentId: "main", runId: "r1" };
@@ -93,7 +93,7 @@ test("an unknown model is counted as unpriced, not as free, and warns once", () 
 });
 
 test("a price override is used ahead of the bundled table", () => {
-  const { config } = parseConfig({
+  const { config } = parseConfig({ settleAfterRestartMs: 0,
     limits: { spendPerDayUsd: 100 },
     prices: { "acme/mystery-9": { input: 10, output: 10 } },
   });
@@ -106,7 +106,7 @@ test("a price override is used ahead of the bundled table", () => {
 });
 
 test("incident #2: identical tool calls are blocked with a user-facing reason", () => {
-  const { config } = parseConfig({ limits: { identicalToolCalls: 5 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { identicalToolCalls: 5 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   const call = { toolName: "web_fetch", params: { url: "https://example.invalid/x.jpg" } };
@@ -121,7 +121,7 @@ test("incident #2: identical tool calls are blocked with a user-facing reason", 
 });
 
 test("a different tool call is unaffected by another one's repeats", () => {
-  const { config } = parseConfig({ limits: { identicalToolCalls: 3 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { identicalToolCalls: 3 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   for (let i = 0; i < 5; i += 1) {
@@ -136,7 +136,7 @@ test("a different tool call is unaffected by another one's repeats", () => {
 });
 
 test("tool params are fingerprinted, never retained", () => {
-  const { config } = parseConfig({ limits: { identicalToolCalls: 2 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { identicalToolCalls: 2 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   // Deliberately not credential-shaped: check-secrets treats real-looking keys
   // in source as a commit blocker, and it is right to.
@@ -149,7 +149,7 @@ test("tool params are fingerprinted, never retained", () => {
 });
 
 test("unserialisable tool params do not throw", () => {
-  const { config } = parseConfig({ limits: { identicalToolCalls: 2 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { identicalToolCalls: 2 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const circular: Record<string, unknown> = {};
   circular["self"] = circular;
@@ -159,7 +159,7 @@ test("unserialisable tool params do not throw", () => {
 });
 
 test("scoping falls back to the session key when agentId is absent", () => {
-  const { config } = parseConfig({ limits: { spendPerDayUsd: 100 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   belay.llmOutput(
     { sessionKey: "telegram:main:123", runId: "r1" },
@@ -169,7 +169,7 @@ test("scoping falls back to the session key when agentId is absent", () => {
 });
 
 test("per-agent caps isolate one agent's overspend from another's", () => {
-  const { config } = parseConfig({
+  const { config } = parseConfig({ settleAfterRestartMs: 0,
     limits: { spendPerDayUsd: 100 },
     agents: { gauntlet: { spendPerDayUsd: 0.5 } },
   });
@@ -184,7 +184,7 @@ test("per-agent caps isolate one agent's overspend from another's", () => {
 });
 
 test("agent_end releases the run without losing the day's spend", () => {
-  const { config } = parseConfig({ limits: { spendPerDayUsd: 100 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   belay.llmOutput(ctx, {
@@ -199,7 +199,7 @@ test("agent_end releases the run without losing the day's spend", () => {
 });
 
 test("errors feed the storm counter only when there is an error", () => {
-  const { config } = parseConfig({ limits: { toolErrorsPerMinute: 3 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { toolErrorsPerMinute: 3 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   belay.afterToolCall(ctx, {});
@@ -250,7 +250,7 @@ test("a thrown non-Error is still contained", () => {
 });
 
 test("a pause rung fires the alert, the record and the account stop together", async () => {
-  const { config } = parseConfig({ limits: { spendPerRunUsd: 0.1 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerRunUsd: 0.1 } });
   let now = T0;
   const logger = makeLogger();
 
@@ -304,7 +304,7 @@ test("a pause rung fires the alert, the record and the account stop together", a
 test("with no effects configured, nothing at all happens on the side", async () => {
   // The default install: a breach still blocks, but writes no file, sends no
   // alert and calls no gateway method, because none of those exist.
-  const { config } = parseConfig({ limits: { spendPerRunUsd: 0.1 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerRunUsd: 0.1 } });
   let now = T0;
   const belay = createBelay(config, makeLogger(), () => now);
   const ctx = { agentId: "main", runId: "r1", channel: "telegram", accountId: "acct-1" };
@@ -321,7 +321,7 @@ test("with no effects configured, nothing at all happens on the side", async () 
 });
 
 test("effects only fire on a new rung, so a storm is one alert per rung", async () => {
-  const { config } = parseConfig({ limits: { identicalToolCalls: 3 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { identicalToolCalls: 3 } });
   const alerts: AlertEvent[] = [];
   const alerter = {
     notify: async (e: AlertEvent) => {
@@ -339,7 +339,7 @@ test("effects only fire on a new rung, so a storm is one alert per rung", async 
 
 test("observe mode never blocks, however badly the agent behaves", async () => {
   // The posture for a first install on a gateway with real users on it.
-  const { config } = parseConfig({
+  const { config } = parseConfig({ settleAfterRestartMs: 0,
     mode: "observe",
     limits: { spendPerRunUsd: 0.01, identicalToolCalls: 2, modelCallsPerMinute: 2 },
     pause: { enabled: true, channel: "telegram", accountId: "acct-1" },
@@ -348,6 +348,9 @@ test("observe mode never blocks, however badly the agent behaves", async () => {
   const records: RecorderRecord[] = [];
   const alerts: AlertEvent[] = [];
   const stops: string[] = [];
+  // Declared before createBelay: the clock is now read at construction to
+  // timestamp startup for the settling window.
+  let now = T0;
   const belay = createBelay(config, makeLogger(), () => (now += 61_000), {
     recorder: { write: (r: RecorderRecord) => records.push(r) } as unknown as Recorder,
     alerter: {
@@ -365,7 +368,6 @@ test("observe mode never blocks, however badly the agent behaves", async () => {
     ),
   });
 
-  let now = T0;
   const ctx = { agentId: "main", runId: "r1", channel: "telegram", accountId: "acct-1" };
   belay.llmOutput(ctx, {
     provider: "google",
@@ -399,7 +401,7 @@ test("observe mode never blocks, however badly the agent behaves", async () => {
 test("per-agent observe: one agent enforces while another only reports", async () => {
   // The real-world case: enforce on a private agent, leave the group bot that
   // has actual users on it untouched until you trust the reports.
-  const { config } = parseConfig({
+  const { config } = parseConfig({ settleAfterRestartMs: 0,
     mode: "enforce",
     limits: { spendPerRunUsd: 0.1 },
     agents: { groupbot: { mode: "observe" } },
@@ -444,7 +446,7 @@ test("per-agent observe: one agent enforces while another only reports", async (
 
 test("a global observe mode overrides a per-agent enforce", () => {
   // A stale per-agent override must not defeat a gateway-wide safety setting.
-  const { config } = parseConfig({
+  const { config } = parseConfig({ settleAfterRestartMs: 0,
     mode: "observe",
     limits: { spendPerRunUsd: 0.1 },
     agents: { main: { mode: "enforce" } },
@@ -460,7 +462,7 @@ test("a global observe mode overrides a per-agent enforce", () => {
 });
 
 test("observe mode records what it would have done", () => {
-  const { config } = parseConfig({ mode: "observe", limits: { spendPerRunUsd: 0.1 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, mode: "observe", limits: { spendPerRunUsd: 0.1 } });
   const records: RecorderRecord[] = [];
   let now = T0;
   const belay = createBelay(config, makeLogger(), () => now, {
@@ -497,7 +499,7 @@ test("describeShape reports field names and types, never values", () => {
 test("usage is read from the assistant transcript entry when the hook field is empty", () => {
   // Real behaviour on a live gateway: llm_output.usage was undefined for Gemini
   // while the transcript entry carried the counts.
-  const { config } = parseConfig({ limits: { spendPerDayUsd: 100 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   belay.llmOutput(
     { agentId: "main", runId: "r1" },
@@ -512,7 +514,7 @@ test("usage is read from the assistant transcript entry when the hook field is e
 });
 
 test("the hook's own usage field still wins when present", () => {
-  const { config } = parseConfig({ limits: { spendPerDayUsd: 100 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   belay.llmOutput(
     { agentId: "main", runId: "r1" },
@@ -537,7 +539,7 @@ test("a junk transcript entry degrades to no usage rather than a wrong number", 
 test("a provider that reports no usage still gets spend capped, via estimation", () => {
   // The end-to-end version of the live-gateway finding: usage is absent, so
   // cost comes from request size instead, and the cap still fires.
-  const { config } = parseConfig({ limits: { spendPerDayUsd: 1 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 1 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
@@ -555,7 +557,7 @@ test("a provider that reports no usage still gets spend capped, via estimation",
 });
 
 test("a model reporting real usage is never estimated on top of it", () => {
-  const { config } = parseConfig({ limits: { spendPerDayUsd: 100 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerDayUsd: 100 } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
@@ -569,7 +571,7 @@ test("a model reporting real usage is never estimated on top of it", () => {
 });
 
 test("estimation can be turned off, and then nothing is estimated", () => {
-  const { config } = parseConfig({ estimation: { enabled: false } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, estimation: { enabled: false } });
   const belay = createBelay(config, makeLogger(), () => T0);
   const ctx = { agentId: "main", runId: "r1" };
   const call = { provider: "google", model: "gemini-3.8-flash", runId: "r1" };
@@ -579,7 +581,7 @@ test("estimation can be turned off, and then nothing is estimated", () => {
 });
 
 test("an estimated breach says so in the reason", () => {
-  const { config } = parseConfig({ limits: { spendPerRunUsd: 0.5 } });
+  const { config } = parseConfig({ settleAfterRestartMs: 0, limits: { spendPerRunUsd: 0.5 } });
   let now = T0;
   const belay = createBelay(config, makeLogger(), () => now);
   const ctx = { agentId: "main", runId: "r1" };
@@ -594,4 +596,44 @@ test("an estimated breach says so in the reason", () => {
     // An operator reading a dollar figure deserves to know it was estimated.
     assert.match(decision.message, /estimated from request size/);
   }
+});
+
+test("breaches in the minutes after a restart warn but never escalate", () => {
+  // A restart drains the channel ingress spool as a burst, so an agent gets a
+  // clump of queued messages and legitimately makes a clump of calls. Observed
+  // live: a restart was followed two minutes later by a run repeating one tool
+  // call 40 times.
+  const { config } = parseConfig({ limits: { spendPerRunUsd: 0.1 }, settleAfterRestartMs: 120_000 });
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now);
+  const ctx = { agentId: "main", runId: "r1" };
+  belay.llmOutput(ctx, {
+    provider: "google",
+    model: "gemini-3.8-flash",
+    usage: { input: 1_000_000 },
+    runId: "r1",
+  });
+
+  now = T0 + 60_000; // inside the settling window
+  assert.equal(belay.beforeAgentRun(ctx).outcome, "pass");
+
+  now = T0 + 121_000; // past it
+  assert.equal(belay.beforeAgentRun(ctx).outcome, "block");
+});
+
+test("the settling window is recorded honestly, not hidden", () => {
+  const { config } = parseConfig({ limits: { spendPerRunUsd: 0.1 }, settleAfterRestartMs: 120_000 });
+  const records: RecorderRecord[] = [];
+  const belay = createBelay(config, makeLogger(), () => T0, {
+    recorder: { write: (r: RecorderRecord) => records.push(r) } as unknown as Recorder,
+  });
+  const ctx = { agentId: "main", runId: "r1" };
+  belay.llmOutput(ctx, {
+    provider: "google",
+    model: "gemini-3.8-flash",
+    usage: { input: 1_000_000 },
+    runId: "r1",
+  });
+  belay.beforeAgentRun(ctx);
+  assert.match(records[0]?.reason ?? "", /settling after restart: would have been endRun/);
 });

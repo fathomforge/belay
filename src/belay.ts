@@ -87,6 +87,8 @@ export function createBelay(
   const meter = new Meter(config.timeZone, config.ladder);
   const blindnessReported = new Set<string>();
   const reporting = new UsageReporting();
+  /** Set at construction, which is gateway startup. See `settleAfterRestartMs`. */
+  const startedAt = now();
 
   /**
    * Ask the policy what should happen, and move the ladder if anything breached.
@@ -119,7 +121,10 @@ export function createBelay(
     // internally, so the reports show what *would* have happened, but nothing
     // above a warning is ever returned to a caller or handed to the pauser.
     const observing = modeFor(config, ctx.agentId) === "observe";
-    const rung = observing ? "warn" : step.rung;
+    // A restart drains the ingress spool as a burst, so the minutes right after
+    // startup are not representative traffic. Warn, but do not act on them.
+    const settling = at - startedAt < config.settleAfterRestartMs;
+    const rung = observing || settling ? "warn" : step.rung;
 
     // Side effects fire only on a *new* step. Everything below this line is
     // deduplicated by the ladder, which is why 300 identical failures produce
@@ -138,7 +143,11 @@ export function createBelay(
           worst.trigger,
           worst.observed,
           worst.limit,
-          observing ? `${worst.reason} (observe mode: would have been ${step.rung})` : worst.reason,
+          observing
+            ? `${worst.reason} (observe mode: would have been ${step.rung})`
+            : settling
+              ? `${worst.reason} (settling after restart: would have been ${step.rung})`
+              : worst.reason,
         ),
       );
 
@@ -173,11 +182,16 @@ export function createBelay(
       if (!decision || (decision.rung !== "endRun" && decision.rung !== "pause")) {
         return { outcome: "pass" };
       }
+      // Say what actually happened. "Paused" means an account was stopped and
+      // needs a human to restart it; ending a run is a much smaller thing, and
+      // conflating them would misinform the person reading the message.
+      const headline =
+        decision.rung === "pause" ? "Belay paused this account" : "Belay stopped this run";
       return {
         outcome: "block",
         // `reason` is plugin-internal per the SDK contract; `message` is user-facing.
         reason: `belay:${decision.rung}`,
-        message: `Paused by Belay: ${decision.reason}.`,
+        message: `${headline}: ${decision.reason}.`,
         category: "cost_limit",
       };
     },
@@ -191,7 +205,7 @@ export function createBelay(
       scope.recordToolCall(now(), ctx.runId ?? "unknown", fingerprint(event.toolName, event.params));
       const decision = assess(ctx, "tool_call");
       if (!decision || decision.rung === "none" || decision.rung === "warn") return {};
-      return { block: true, blockReason: `Belay: ${decision.reason}.` };
+      return { block: true, blockReason: `Belay blocked this tool call: ${decision.reason}.` };
     },
 
     /** `after_tool_call`: observe only; feeds the error-storm counter. */

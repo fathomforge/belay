@@ -216,6 +216,12 @@
             "description": "Bytes of request payload per input token. Errs high on purpose."
           }
         }
+      },
+      "settleAfterRestartMs": {
+        "type": "number",
+        "minimum": 0,
+        "default": 120000,
+        "description": "Grace period after gateway startup during which breaches warn but never escalate. A restart drains the channel ingress spool as a burst, so the first minutes are not representative traffic. 0 disables."
       }
     },
     "$defs": {

@@ -64,6 +64,16 @@ export type BelayConfig = {
   rungs: Record<Trigger, RungName>;
   /** Operator price overrides, keyed `provider/model`. */
   prices: Record<string, ModelPrice>;
+  /**
+   * Grace period after startup during which breaches warn but never escalate.
+   *
+   * A gateway restart drains the channel ingress spool as a burst, so an agent
+   * gets a clump of queued messages at once and legitimately makes a clump of
+   * calls. Without this, Belay punishes an agent for its own gateway's restart.
+   * Observed live: a restart was followed two minutes later by a run repeating
+   * one tool call 40 times.
+   */
+  settleAfterRestartMs: number;
   /** Absolute path for cross-session state. Empty string disables persistence. */
   stateFile: string;
   /** Cost estimation from request size, for providers that report no usage. */
@@ -105,6 +115,7 @@ export const DEFAULT_CONFIG: BelayConfig = {
     failover_context: "blockTool",
   },
   prices: {},
+  settleAfterRestartMs: 120_000,
   stateFile: "",
   estimation: DEFAULT_ESTIMATION,
   alerts: DEFAULT_ALERTS,
@@ -124,6 +135,20 @@ function positiveNumber(
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     issues.push({ path, message: `expected a positive number, got ${JSON.stringify(value)}` });
     return undefined;
+  }
+  return value;
+}
+
+function nonNegativeNumber(
+  value: unknown,
+  path: string,
+  issues: ConfigIssue[],
+  fallback: number,
+): number {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    issues.push({ path, message: `expected a number >= 0, got ${JSON.stringify(value)}` });
+    return fallback;
   }
   return value;
 }
@@ -288,6 +313,13 @@ export function parseConfig(raw: unknown): ParsedConfig {
       ladder,
       rungs: { ...DEFAULT_CONFIG.rungs },
       prices,
+      // 0 is meaningful here: "enforce immediately after a restart".
+      settleAfterRestartMs: nonNegativeNumber(
+        src["settleAfterRestartMs"],
+        "settleAfterRestartMs",
+        issues,
+        DEFAULT_CONFIG.settleAfterRestartMs,
+      ),
       stateFile: typeof src["stateFile"] === "string" ? src["stateFile"] : "",
       estimation: parseEstimation(src["estimation"], issues),
       alerts: parseAlerts(src["alerts"], issues),

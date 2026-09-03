@@ -252,6 +252,25 @@ Details worth knowing:
 > identical repeated calls and error storms are counted directly, so they work regardless — and
 > they're what catch a runaway loop, which is usually the failure that costs the most.
 
+## Verified in production
+
+Belay was developed against the real OpenClaw 2026.8.2 type definitions and then dogfooded on a
+live five-agent gateway serving real users. Things that only showed up there, and are fixed:
+
+- Typed hooks must be registered with `api.on`, not `api.registerHook`. The wrong one is accepted,
+  logged as ignored, and never invoked — the plugin loads, reports itself active, and does nothing.
+- Non-bundled plugins are blocked from conversation hooks until
+  `hooks.allowConversationAccess: true` is set.
+- Some hook contexts carry `agentId`, others only `sessionKey`; scoping naively on both metered one
+  agent as two, so neither reached its cap.
+- The provider reported no token usage at all, which made every spend cap silently inert. Hence
+  estimation from request size.
+- A gateway restart drains the ingress spool as a burst, so the first minutes after startup are not
+  representative traffic. Hence the settling window.
+
+Enforcement, blocking, the flight recorder, `channels.stop` and resume have all been exercised
+against a live gateway, not only in tests.
+
 ## Requirements
 
 - OpenClaw `>= 2026.8.2`
