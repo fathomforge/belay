@@ -9,13 +9,37 @@ permissions:
   contents: read
 
 jobs:
+  # The test suite is TypeScript, run through Node's type stripping. That needs
+  # Node 22+ (and glob support in `node --test`, which Node 20 lacks), so the
+  # suite runs on the versions that can execute it.
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 20 is the floor declared in package.json engines; 24 matches what the
-        # OpenClaw container runs. Both must stay green.
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # `--ignore-scripts`: this project runs no install scripts, and CI should
+      # fail if a dependency ever introduces one.
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  # What users actually run is the compiled JS in dist/ plus the bin script, and
+  # package.json promises Node 20+. That promise is verified here rather than
+  # assumed: Node 20 cannot run the TypeScript sources, but it must run the
+  # artifact.
+  artifact:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
         node: ["20", "22", "24"]
     steps:
       - uses: actions/checkout@v4
@@ -23,12 +47,24 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      # `npm ci --ignore-scripts`: this project runs no install scripts, and CI
-      # should fail if a dependency ever introduces one.
       - run: npm ci --ignore-scripts
-      - run: npm run typecheck
-      - run: npm test
       - run: npm run build
+
+      - name: The built plugin core loads
+        # belay.js deliberately imports nothing from the OpenClaw SDK, so it can
+        # be loaded without a gateway. index.js is the adapter and cannot.
+        run: |
+          node --input-type=module -e "
+            const m = await import('./dist/belay.js');
+            if (typeof m.createBelay !== 'function') { console.error('createBelay missing'); process.exit(1); }
+            console.log('dist/belay.js loads on node ' + process.versions.node);
+          "
+
+      - name: The CLI runs
+        run: |
+          node bin/belay.mjs --help > /dev/null
+          node bin/belay.mjs incidents --trail /nonexistent.jsonl | grep -q "No incidents"
+          echo "bin/belay.mjs runs on node $(node -v)"
 
   supply-chain:
     runs-on: ubuntu-latest
@@ -57,6 +93,14 @@ jobs:
             console.log('no install scripts');
           "
 
+      - name: Lockfile stays minimal
+        # A lockfile once quietly referenced a 206 MB package this project does
+        # not use, pulled in as an auto-installed peer dependency.
+        run: |
+          COUNT=$(node -p "Object.keys(require('./package-lock.json').packages||{}).length")
+          echo "lockfile entries: $COUNT"
+          test "$COUNT" -le 10
+
       - run: npm audit --omit=dev --audit-level=moderate
 
       - name: Package contents
@@ -71,10 +115,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      # The same guard that runs on every local commit, run again against the
-      # full diff of the PR so nothing lands through a --no-verify.
+      # The same guard that runs on every local commit, run again over the whole
+      # tree so nothing can land through a --no-verify.
       - name: Scan for secrets and personal data
         run: |
-          git diff --name-only origin/${{ github.base_ref || 'main' }}...HEAD > /dev/null 2>&1 || true
           git reset --soft $(git rev-list --max-parents=0 HEAD)
           node scripts/check-secrets.mjs
