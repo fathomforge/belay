@@ -102,9 +102,24 @@ function status(opts) {
     lines.push("  Spend recorded today (per agent):");
     const scopes = state.scopes ?? [];
     if (scopes.length === 0) lines.push("    (nothing yet)");
+
+    // An agent in observe mode still climbs the ladder internally, so that its
+    // reports can say what *would* have happened. Labelling that as "ended a
+    // run" would claim something that never occurred, so check what was
+    // actually recorded before describing it.
+    const lastAction = new Map();
+    for (const r of trail) lastAction.set(r.scope, r.action);
+
     for (const s of scopes) {
       const rung = s.ladder?.rung ?? "none";
-      const flag = rung === "none" ? "" : `  <- ${RUNG_LABEL[rung] ?? rung}`;
+      const acted = lastAction.get(s.key);
+      const label = RUNG_LABEL[rung] ?? rung;
+      const flag =
+        rung === "none"
+          ? ""
+          : acted === "logged"
+            ? `  <- would have ${label}`
+            : `  <- ${label}`;
       lines.push(`    ${s.key.padEnd(20)} ${money(s.day?.total ?? 0).padStart(10)}  (${s.day?.day ?? "?"})${flag}`);
     }
   }
