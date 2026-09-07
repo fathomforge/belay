@@ -1,0 +1,50 @@
+name: Release
+
+# Publishes to npm when a version tag is pushed.
+#
+# Publishing happens here rather than from a laptop because package.json sets
+# `publishConfig.provenance`, and npm provenance requires an OIDC id-token that
+# only a CI runner can mint. A local `npm publish` would fail, and dropping
+# provenance to work around that would weaken exactly the supply-chain claim
+# SECURITY.md makes.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+
+      # dist/ is gitignored, so the published artifact is built here rather than
+      # committed. This is also why a `git:` install of this repo cannot work --
+      # there is no dist/ to point `openclaw.extensions` at.
+      - run: npm run build
+
+      - name: The built plugin entry exists
+        # package.json's openclaw.extensions points at dist/index.js. If the
+        # build silently produced nothing, publishing would ship a package that
+        # installs and then fails with "extension entry not found".
+        run: test -f dist/index.js && test -f bin/belay.mjs
+
+      - name: Package contents
+        run: npm pack --dry-run
+
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

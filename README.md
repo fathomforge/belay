@@ -44,11 +44,24 @@ Belay is the layer that notices and steps in — gradually.
 ## Install
 
 ```bash
-openclaw plugins install npm:@fathomforge/belay
+openclaw plugins install npm:@fathomforge/belay --force --accept-capabilities
 ```
 
-Installing from a local path or an unreviewed source additionally needs
-`--force --accept-capabilities`; OpenClaw asks for explicit consent before loading it.
+`--force --accept-capabilities` is required because Belay is not in ClawHub's review metadata, and
+because it asks for hook capabilities. OpenClaw wants explicit consent for both, which is the right
+default for anything that can block your agents.
+
+**Installing from source** (for contributors, or to run an unreleased commit):
+
+```bash
+git clone https://github.com/fathomforge/belay && cd belay
+npm ci && npm run build
+openclaw plugins install --link "$PWD" --force --accept-capabilities
+```
+
+The build step is not optional. `dist/` is deliberately not committed, so
+`openclaw plugins install git:github.com/fathomforge/belay` fails with
+`extension entry not found: ./dist/index.js` — install from npm or build it yourself.
 
 Then add to `openclaw.json`:
 
