@@ -245,6 +245,10 @@ haven't. A meter that trusted those numbers would report $0.00 and enforce nothi
 Three situations produce an honest "I don't know" rather than a wrong number, and Belay warns about
 each of them:
 
+- **Your provider reports no token usage at all.** Verified for `google/gemini-3.8-flash` on
+  OpenClaw 2026.8.2 and reported upstream as
+  [#141581](https://github.com/openclaw/openclaw/issues/141581). Check yours with
+  `openclaw status --usage`.
 - **The model isn't in the price table** and you haven't set a `prices` override.
 - **The provider reported only a token total**, with no input/output split. Those are priced up to
   5× apart, so no honest dollar figure exists.
@@ -257,7 +261,7 @@ What a provider reports decides which controls work. Measured on OpenClaw 2026.8
 |---|---|---|---|
 | **OpenAI** (`gpt-5.4-nano`) | **✓ reported** | ✗ absent | **Exact dollar caps.** Set prices and go |
 | **Google** (`gemini-3.8-flash`) | ✗ absent | **✓ reported** | **Exact request-size limits** |
-| Anthropic | untested | untested | OpenClaw 2026.8.2 could not complete a request to any Anthropic model in our testing |
+| Anthropic | untested | untested | OpenClaw 2026.8.2 could not complete a request to any Anthropic model ([#141582](https://github.com/openclaw/openclaw/issues/141582)) |
 
 **Neither provider gives both signals**, which is why Belay carries both mechanisms and uses
 whichever is available. If your provider reports usage you get exact spend caps; if it reports

@@ -14,6 +14,11 @@ delivers `usage: undefined`, and the assistant transcript entry's usage object i
 zeros. Configuring `models.providers.google.models[].cost` does not change this. With no token
 counts, every spend cap is inert.
 
+Reported upstream as [openclaw/openclaw#141581](https://github.com/openclaw/openclaw/issues/141581).
+The same gateway populates `usage` correctly for `openai/gpt-5.4-nano`, so this is provider-specific
+rather than a hook problem. If it is fixed, Belay measures instead of estimating and everything
+below becomes a fallback path rather than the primary one.
+
 `model_call_ended` does carry `requestPayloadBytes` and `responseStreamBytes` — the size of the
 request and response, never their content. The estimator converts bytes to tokens with a single
 divisor, `estimation.bytesPerToken`, and prices the result normally.
@@ -115,8 +120,9 @@ is the argument for carrying both mechanisms rather than picking one.
 The Anthropic rows are untestable rather than negative: OpenClaw 2026.8.2 rejected every request to
 both models with `provider rejected the request schema or tool payload`, on two different agents
 (one with a full tool surface, one with a twenty-item deny list), using a key that authenticated
-successfully. No call reached the model, so its usage reporting is unknown. That looks like an
-upstream integration defect rather than anything to do with Belay.
+successfully. No call reached the model, so its usage reporting is unknown. Reported upstream as
+[openclaw/openclaw#141582](https://github.com/openclaw/openclaw/issues/141582); still reproducible
+a week later on the same version.
 
 ## Honest limits
 
