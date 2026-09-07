@@ -14,7 +14,7 @@
  *
  * Reads only. Never contacts the network, never touches gateway config.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { argv, exit, stdout } from "node:process";
 
 const USAGE = `belay - read the local Belay flight recorder
@@ -22,6 +22,7 @@ const USAGE = `belay - read the local Belay flight recorder
 Usage:
   belay status    [--state <file>] [--trail <file>]
   belay incidents [--trail <file>] [--hours N] [--agent <id>] [--json]
+  belay reset     [--state <file>] [--agent <id>]   clear a stuck ladder rung
 
 Both files are the paths set in openclaw.json under
 plugins.entries.belay.config.stateFile and .recorder.file
@@ -147,6 +148,50 @@ function status(opts) {
   stdout.write(`${lines.join("\n")}\n`);
 }
 
+/**
+ * Clear a scope's ladder back to `none`.
+ *
+ * The top rung is deliberately sticky: an account that was stopped stays stopped
+ * until a human says otherwise. But that left no way *down*. An agent that
+ * reached the ceiling -- including one that reached it during testing -- carries
+ * that rung indefinitely, and the next breach of any size is treated as maximal.
+ *
+ * `lastActionAt` is stamped with the current time so this survives a merge with
+ * a gateway process still holding the old rung in memory (the newer action
+ * wins). The gateway keeps its in-memory copy until it restarts, which is why
+ * the reminder below is printed rather than implied.
+ */
+function reset(opts) {
+  if (!opts.state) {
+    stdout.write("belay reset: --state <file> is required (or set BELAY_STATE_FILE).\n");
+    exit(1);
+  }
+  const state = readState(opts.state);
+  if (!state) {
+    stdout.write(`belay reset: no readable state at ${opts.state}\n`);
+    exit(1);
+  }
+  const now = Date.now();
+  let cleared = 0;
+  for (const scope of state.scopes ?? []) {
+    if (opts.agent && scope.key !== opts.agent) continue;
+    if (!scope.ladder || scope.ladder.rung === "none") continue;
+    stdout.write(`  ${scope.key}: ${scope.ladder.rung} -> none\n`);
+    scope.ladder = { rung: "none", lastTriggerAt: now, lastActionAt: now };
+    cleared += 1;
+  }
+  if (cleared === 0) {
+    stdout.write("Nothing to clear: every ladder is already at none.\n");
+    return;
+  }
+  writeFileSync(opts.state, JSON.stringify(state), { mode: 0o600 });
+  stdout.write(
+    `\nCleared ${cleared} ladder(s).\n` +
+      "Restart the gateway to drop the in-memory copy as well:\n" +
+      "  docker compose up -d --force-recreate\n",
+  );
+}
+
 function incidents(opts) {
   const cutoff = Date.now() - opts.hours * 3600_000;
   let trail = readTrail(opts.trail).filter((r) => Date.parse(r.t) >= cutoff);
@@ -185,6 +230,7 @@ if (opts.help || !command) {
 try {
   if (command === "status") status(opts);
   else if (command === "incidents") incidents(opts);
+  else if (command === "reset") reset(opts);
   else {
     stdout.write(`Unknown command "${command}".\n\n${USAGE}\n`);
     exit(1);

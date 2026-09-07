@@ -181,3 +181,26 @@ test("a missing snapshot restores a fresh ladder instead of throwing", () => {
   // every hook that has not been registered yet.
   assert.equal(Ladder.fromJSON(undefined as never, cfg).rung, "none");
 });
+
+test("a rung the ladder could not actually act on can be stepped back down", () => {
+  // The top rung is sticky, which is right when the account really stopped. When
+  // the pause fails, latching there leaves the scope permanently at the ceiling:
+  // every later breach, however small, is treated as maximal and there is no way
+  // down. Seen on a live gateway, where a test left an agent in that state for
+  // five days.
+  const l = new Ladder(cfg);
+  l.record(0, "pause", "spend_day");
+  assert.equal(l.rungAt(1_000), "pause");
+
+  l.demote(1_000);
+  assert.equal(l.rungAt(1_000), "endRun", "back to a rung that decays normally");
+
+  // And it now decays like any other rung, rather than latching forever.
+  assert.equal(l.rungAt(1_000 + 3 * cfg.decayMs), "none");
+});
+
+test("demote from the bottom is harmless", () => {
+  const l = new Ladder(cfg);
+  l.demote(1_000);
+  assert.equal(l.rungAt(1_000), "none");
+});

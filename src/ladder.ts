@@ -141,6 +141,22 @@ export class Ladder {
     return { rung: rungName(this.#rung), isNew, escalated, trigger, at: now };
   }
 
+  /**
+   * Step down one rung, clearing the sticky top.
+   *
+   * Used when an action the ladder decided on could not actually be performed.
+   * Latching at `pause` is right when the account really stopped; if the pause
+   * failed, latching there leaves the scope permanently at the ceiling, where
+   * the next breach of any size is treated as maximal. Observed on a live
+   * gateway: a test five days earlier left an agent one small breach away from
+   * being hard-blocked.
+   */
+  demote(now: number): void {
+    const current = this.#decayed(now);
+    this.#rung = Math.max(RUNG.none, current - 1) as RungLevel;
+    this.#lastTriggerAt = now;
+  }
+
   /** Operator resume. The only way down from `pause`. */
   resume(now: number): void {
     this.#rung = RUNG.none;
