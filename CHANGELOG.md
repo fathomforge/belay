@@ -5,7 +5,7 @@ All notable changes to Belay are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2026-09-02
+## [0.1.0] - 2026-09-07
 
 First release. Spend caps, rate limits and a graceful pause ladder for OpenClaw agents, running
 in-process with zero runtime dependencies and no network calls except the alerts you configure.
@@ -38,11 +38,33 @@ in-process with zero runtime dependencies and no network calls except the alerts
   stop per account until a human resumes, and a partial target is refused rather than guessed.
 - **Restart settling window**: breaches in the first two minutes after gateway startup warn but
   never escalate, because a restart drains the channel ingress spool as a burst.
+- **`belay reset [--agent <id>]`**: clears a stuck ladder rung. The top rung is deliberately sticky,
+  which left no way down once a scope reached it.
+- **Prices are read from `models.providers.*.models[].cost`**, so pricing is not configured twice.
+
+### Known limitations
+
+- **The pause rung cannot fire on OpenClaw 2026.8.2.** Gateway method dispatch is reserved for
+  plugin HTTP routes, and a hook handler is not a request scope, so `channels.stop` is refused. The
+  ladder therefore tops out at `endRun` by default. Ending a run already blocks the offending run
+  and every later one while the breach persists.
+- **`google/gemini-3.8-flash` reports no token usage**, so dollar caps cannot work on it without
+  estimation ([#141581](https://github.com/openclaw/openclaw/issues/141581)). Request-size limits
+  are exact and unaffected.
+- **Anthropic models are unusable on 2026.8.2**
+  ([#141582](https://github.com/openclaw/openclaw/issues/141582)), so Belay's behaviour with them
+  is untested.
+- Estimated costs carry roughly ±50% error; see [docs/CALIBRATION.md](docs/CALIBRATION.md).
 
 ### Notes
 
-Verified against openclaw 2026.8.2 and dogfooded on a live five-agent production gateway, where
-enforcement, blocking, the flight recorder, `channels.stop` and resume were all exercised for real.
+Verified against openclaw 2026.8.2 and dogfooded for a week on a live five-agent production
+gateway. Enforcement, blocking, alert delivery, the flight recorder, deduplication and account
+stop/resume were all exercised against real traffic rather than only in tests, and the shipped
+thresholds are derived from what that week measured.
+
+Fifteen bugs were found and fixed during that period, most of them in the class where a guardrail
+looks installed and silently enforces nothing.
 
 Belay never reads prompts, replies or tool parameters. Tool calls are hashed before counting, and
 no type in the plugin has a field for message content.
