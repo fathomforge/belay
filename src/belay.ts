@@ -416,6 +416,9 @@ export function createBelay(
         usage?: HookUsage;
         lastAssistant?: unknown;
         runId?: string;
+        resolvedRef?: string;
+        api?: string;
+        harnessId?: string;
       },
     ): void {
       // On a real gateway `usage` came back undefined for Gemini while the
@@ -465,6 +468,18 @@ export function createBelay(
           // Field *names* and value *types* only -- never values. Enough to find
           // where a provider hid its token counts, without touching content.
           logger.warn(`[${PLUGIN_ID}] llm_output shape: ${describeShape(event)}`);
+          // Identifiers, not content: which transport and harness actually ran.
+          // Without these an operator reporting missing usage upstream cannot
+          // say *which* code path produced it, which is the first thing a
+          // maintainer asks for.
+          const entry = (event.lastAssistant ?? {}) as Record<string, unknown>;
+          logger.warn(
+            `[${PLUGIN_ID}] resolved route: provider=${String(event.provider)} ` +
+              `model=${String(event.model)} resolvedRef=${String(event.resolvedRef)} ` +
+              `api=${String(event.api)} harnessId=${String(event.harnessId)} | ` +
+              `transcript: api=${String(entry["api"])} provider=${String(entry["provider"])} ` +
+              `model=${String(entry["model"])} stopReason=${String(entry["stopReason"])}`,
+          );
           logger.warn(`[${PLUGIN_ID}] lastAssistant shape: ${describeShape(event.lastAssistant)}`);
           // Only the numbers Belay itself understands, re-emitted from its own
           // normalized reading. Stringifying the raw `usage` object would print
