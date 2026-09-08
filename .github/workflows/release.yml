@@ -45,6 +45,28 @@ jobs:
       - name: Package contents
         run: npm pack --dry-run
 
+      # Moving a tag re-runs this workflow, and npm refuses to republish a
+      # version that already exists. That failure is correct but cosmetic, and a
+      # red X on the repo reads as broken CI to anyone arriving from a link.
+      # Check first so a re-run is a no-op instead.
+      - name: Is this version already on the registry?
+        id: published
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "Already published: $name@$version"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not yet published: $name@$version"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - run: npm publish --access public
+        if: steps.published.outputs.exists == 'false'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish skipped
+        if: steps.published.outputs.exists == 'true'
+        run: echo "::notice::Version already on the registry; publish skipped. Bump the version to release."
