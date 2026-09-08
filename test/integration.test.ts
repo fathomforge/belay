@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { createBelay } from "../src/belay.ts";
 import { parseConfig } from "../src/config.ts";
 import { Recorder } from "../src/recorder.ts";
+import { Alerter } from "../src/alerts.ts";
 import { parseTrail } from "../src/recorder.ts";
 
 const CLI = fileURLToPath(new URL("../bin/belay.mjs", import.meta.url));
@@ -194,4 +195,84 @@ test("5. genuinely old unversioned records stay unverified", () => {
   );
   const { out } = cli(["incidents", "--trail", file, "--hours", "9999"]);
   assert.match(out, /unverified/);
+});
+
+// --- alert path ------------------------------------------------------------
+// The third surface with the same defect. The recorder was corrected in 0.5.0
+// and the CLI in 0.6.0, but the alert formatter still derived its headline from
+// the ladder rung -- so a model-call notification, which stops nothing, sent
+// "Belay: blocked a tool call" and "Belay: ended a run" to Telegram. That is the
+// line an operator reads at 2am before deciding whether to intervene, and it
+// told them a runaway had been contained when it had not.
+
+function alertFixture(over: Record<string, unknown> = {}) {
+  const sent: string[] = [];
+  const transport = {
+    name: "capture",
+    send: async (text: string) => {
+      sent.push(text);
+    },
+  };
+  const { config } = parseConfig({
+    mode: "enforce",
+    settleAfterRestartMs: 0,
+    limits: { modelCallsPerMinute: 2 },
+    ladder: { cooldownMs: 1 },
+    alerts: { minRung: "warn" },
+    ...over,
+  });
+  const alerter = new Alerter(config.alerts, [transport], makeLogger());
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now, { alerter });
+  return { sent, belay, bump: (ms: number) => (now += ms) };
+}
+
+test("6. alerts never announce enforcement before a gate has acted", async () => {
+  const { sent, belay, bump } = alertFixture();
+  for (let i = 0; i < 8; i += 1) {
+    bump(1000);
+    belay.modelCallStarted({ agentId: "main", runId: "r1" });
+  }
+  await new Promise((r) => setTimeout(r, 20));
+
+  assert.ok(sent.length > 0, "the storm must alert");
+  for (const text of sent) {
+    assert.doesNotMatch(text, /blocked a tool call/, `false containment claim: ${text}`);
+    assert.doesNotMatch(text, /ended a run/, `false containment claim: ${text}`);
+  }
+  assert.ok(
+    sent.some((s) => /escalated to endRun -- no gate action yet/.test(s)),
+    "and must say plainly that nothing has been stopped",
+  );
+});
+
+test("7. an alert says a run was ended only once the run gate ended one", async () => {
+  const { sent, belay, bump } = alertFixture();
+  for (let i = 0; i < 8; i += 1) {
+    bump(1000);
+    belay.modelCallStarted({ agentId: "main", runId: "r1" });
+  }
+  bump(1000);
+  assert.equal(belay.beforeAgentRun({ agentId: "main", runId: "r2" }).outcome, "block");
+  await new Promise((r) => setTimeout(r, 20));
+
+  assert.ok(
+    sent.some((s) => /Belay: ended a run/.test(s)),
+    "the real refusal must be announced",
+  );
+});
+
+test("8. observe mode never announces enforcement", async () => {
+  const { sent, belay, bump } = alertFixture({ mode: "observe" });
+  for (let i = 0; i < 8; i += 1) {
+    bump(1000);
+    belay.modelCallStarted({ agentId: "main", runId: "r1" });
+  }
+  bump(1000);
+  belay.beforeAgentRun({ agentId: "main", runId: "r2" });
+  await new Promise((r) => setTimeout(r, 20));
+
+  for (const text of sent) {
+    assert.doesNotMatch(text, /blocked a tool call|ended a run|paused an account/, text);
+  }
 });

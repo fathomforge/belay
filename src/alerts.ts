@@ -24,6 +24,22 @@ export type AlertEvent = {
   /** Plain-English explanation, built from numbers only. */
   reason: string;
   at: number;
+  /**
+   * What actually happened, from the hook that raised this.
+   *
+   * The headline was derived from `rung` alone, so a model-call notification --
+   * which stops nothing -- announced "blocked a tool call" and "ended a run" to
+   * Telegram. An operator reading that could reasonably believe a runaway had
+   * been contained and leave it running. The recorder and CLI were corrected
+   * for this; the alert path is the third surface with the same defect, and the
+   * one an operator actually reads at 2am.
+   *
+   * Optional so an omitted value degrades to the old rung-derived wording
+   * rather than crashing an alert, but every internal caller sets it.
+   */
+  action?: "logged" | "escalated" | "blocked" | "ended" | "paused";
+  /** Set when a pause attempt failed, so the headline cannot claim success. */
+  pauseFailed?: boolean;
 };
 
 /** A place to send an alert. Must resolve; rejections are caught by the caller. */
@@ -58,21 +74,43 @@ const RUNG_ORDER: Record<RungName, number> = {
   pause: 4,
 };
 
-/** Human-readable one-liner. Deliberately boring, and free of any content. */
-export function formatAlert(event: AlertEvent): string {
-  const when = new Date(event.at).toISOString().replace("T", " ").slice(0, 19);
-  const headline: Record<RungName, string> = {
+function headlineFor(event: AlertEvent): string {
+  if (event.pauseFailed) return "Belay: PAUSE FAILED -- the account is still running";
+  switch (event.action) {
+    case "blocked":
+      return "Belay: blocked a tool call";
+    case "ended":
+      return "Belay: ended a run";
+    case "paused":
+      return "Belay: paused an account";
+    case "escalated":
+      // Nothing has been stopped yet. Say so in the headline, because that is
+      // the line an operator reads before deciding whether to intervene.
+      return `Belay: escalated to ${event.rung} -- no gate action yet`;
+    case "logged":
+      return "Belay: warning";
+    default:
+      break;
+  }
+  // No action supplied: fall back to rung wording, and never claim completion.
+  const byRung: Record<RungName, string> = {
     none: "Belay: notice",
     warn: "Belay: warning",
-    blockTool: "Belay: blocked a tool call",
-    endRun: "Belay: ended a run",
+    blockTool: "Belay: blockTool reached",
+    endRun: "Belay: endRun reached",
     // Deliberately future tense: this alert is emitted when the ladder reaches
     // the top rung, before the gateway has confirmed the account actually
     // stopped. A separate alert reports what really happened. Claiming a
     // completed action that then fails is worse than saying nothing.
     pause: "Belay: pausing an account",
   };
-  return `${headline[event.rung]}\nagent: ${event.scope}\nwhy: ${event.reason}\nrule: ${event.trigger}\nat: ${when} UTC`;
+  return byRung[event.rung];
+}
+
+/** Human-readable one-liner. Deliberately boring, and free of any content. */
+export function formatAlert(event: AlertEvent): string {
+  const when = new Date(event.at).toISOString().replace("T", " ").slice(0, 19);
+  return `${headlineFor(event)}\nagent: ${event.scope}\nwhy: ${event.reason}\nrule: ${event.trigger}\nat: ${when} UTC`;
 }
 
 /** Minimal `fetch` shape, injected so tests never touch the network. */

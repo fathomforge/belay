@@ -5,6 +5,37 @@ All notable changes to Belay are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-07
+
+Final pre-launch review. One blocker, and it is the same defect a third time: after correcting the
+recorder (0.5.0) and the CLI (0.6.0), the **alert path** still derived its headline from the ladder
+rung.
+
+### Fixed
+
+- **Alerts announced containment that had not happened.** A model-call notification — which stops
+  nothing — sent `Belay: blocked a tool call` and `Belay: ended a run` to Telegram. That is the line
+  an operator reads before deciding whether to intervene, so of the three surfaces this was the one
+  where the false claim did real harm: you could be told a runaway was contained and leave it
+  running. `AlertEvent` now carries the same `action` evidence the recorder writes, and the headline
+  is derived from it: a notification says `escalated to endRun -- no gate action yet`.
+- **The alert for a real refusal was never sent.** Alerts fired only on a new ladder step, so once
+  the ladder sat at its ceiling the message announcing that a gate had actually refused something
+  could never be emitted. Outcome reporting — record and alert together — now uses its own
+  deduplication key, one per (scope, surface, rung) until the ladder moves.
+- **A failed pause cannot produce a success headline.** The failure alert is flagged explicitly
+  rather than inferred from the rung.
+
+### Added
+
+- Alert-path acceptance tests using the real engine and real `Alerter` with a capturing transport:
+  no completed-action headline before a gate, the correct headline after a real refusal, and no
+  enforcement claim in observe mode.
+
+Enforcement is unchanged throughout. The existing test asserting that a throwing alert transport
+cannot cancel the block it was reporting still passes — it caught a regression in this change,
+where the new reporting path swallowed an error the outer guard needed to see.
+
 ## [0.6.0] - 2026-09-07
 
 A fifth review pass, on the fix from the fourth. The producer-side correction was right and three

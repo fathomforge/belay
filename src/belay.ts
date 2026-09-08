@@ -22,7 +22,7 @@ import type { Alerter } from "./alerts.ts";
 import { estimateFromBytes, PendingBytes, UsageReporting } from "./estimate.ts";
 import type { CallBytes } from "./estimate.ts";
 import type { Pauser } from "./pauser.ts";
-import { enforcesAt, toRecord } from "./recorder.ts";
+import { actionFor, enforcesAt, toRecord } from "./recorder.ts";
 import type { Recorder } from "./recorder.ts";
 import type { HookUsage, RungName } from "./types.ts";
 
@@ -217,29 +217,7 @@ export function createBelay(
     const settling = at - startedAt < config.settleAfterRestartMs;
     const rung = observing || settling ? "warn" : step.rung;
 
-    // The gate at this surface is about to refuse something. That is a real
-    // enforcement event and it must reach the trail -- but it cannot ride on
-    // `step.isNew`, because once the ladder sits at its ceiling no step is ever
-    // new again, and the refusal that actually happens would never be recorded.
-    // So outcomes are deduplicated on their own key: one record per
-    // (scope, surface, rung) until the ladder moves, which is enough to prove a
-    // gate acted without writing a line per blocked call.
-    if (!observing && !settling && enforcesAt(surface, rung)) {
-      const key = `${scope.key}|${surface}|${rung}`;
-      if (step.isNew) for (const k of [...outcomeRecorded]) {
-        if (k.startsWith(`${scope.key}|`)) outcomeRecorded.delete(k);
-      }
-      if (!outcomeRecorded.has(key)) {
-        outcomeRecorded.add(key);
-        try {
-          effects.recorder?.write(
-            toRecord(at, scope.key, rung, worst.trigger, worst.observed, worst.limit, worst.reason, surface),
-          );
-        } catch {
-          // Recording an outcome must never cancel it. Same trade as below.
-        }
-      }
-    }
+    const isOutcome = !observing && !settling && enforcesAt(surface, rung);
 
     // Side effects fire only on a *new* step. Everything below this line is
     // deduplicated by the ladder, which is why 300 identical failures produce
@@ -252,15 +230,51 @@ export function createBelay(
     // because telling someone about it failed, which is the worst possible
     // trade. The decision itself is already made; only the telling is optional.
     try {
+      // The gate at this surface is about to refuse something. That is a real
+      // enforcement event and it must reach the trail -- but it cannot ride on
+      // `step.isNew`, because once the ladder sits at its ceiling no step is
+      // ever new again, and the refusal that actually happens would never be
+      // recorded. So outcomes are deduplicated on their own key: one report per
+      // (scope, surface, rung) until the ladder moves, which is enough to prove
+      // a gate acted without writing a line per blocked call.
+      if (isOutcome) {
+        const key = `${scope.key}|${surface}|${rung}`;
+        if (step.isNew) {
+          for (const k of [...outcomeRecorded]) {
+            if (k.startsWith(`${scope.key}|`)) outcomeRecorded.delete(k);
+          }
+        }
+        if (!outcomeRecorded.has(key)) {
+          outcomeRecorded.add(key);
+          effects.recorder?.write(
+            toRecord(at, scope.key, rung, worst.trigger, worst.observed, worst.limit, worst.reason, surface),
+          );
+          // The alert comes from here too, not from the escalation block below:
+          // that block is gated on `step.isNew`, so at the ceiling the one
+          // message saying a gate actually refused something was never sent.
+          void effects.alerter?.notify(
+            {
+              scope: scope.key,
+              rung,
+              trigger: worst.trigger,
+              reason: worst.reason,
+              at,
+              action: actionFor(surface, rung),
+            },
+            at,
+          );
+        }
+      }
+
       if (step.isNew) {
         logger.warn(
           `[${PLUGIN_ID}] ${scope.key}: ${observing ? `would ${step.rung} (observe mode)` : step.rung}` +
             ` for ${worst.reason}`,
         );
 
-        // Skip when the outcome record above already described this exact
-        // decision at this surface -- otherwise a real refusal writes twice.
-        if (!(!observing && !settling && enforcesAt(surface, rung))) effects.recorder?.write(
+        // Skip when the outcome path above already described this exact
+        // decision at this surface -- otherwise a real refusal reports twice.
+        if (!isOutcome) effects.recorder?.write(
           toRecord(
             at,
             scope.key,
@@ -279,10 +293,20 @@ export function createBelay(
           ),
         );
 
-        void effects.alerter?.notify(
-          { scope: scope.key, rung, trigger: worst.trigger, reason: worst.reason, at },
-          at,
-        );
+        if (!isOutcome)
+          void effects.alerter?.notify(
+            {
+              scope: scope.key,
+              rung,
+              trigger: worst.trigger,
+              reason: worst.reason,
+              at,
+              // The same evidence the recorder writes: a notification hook has
+              // stopped nothing, and the headline must not say otherwise.
+              action: observing || settling ? "logged" : actionFor(surface, rung),
+            },
+            at,
+          );
       }
 
       // Deliberately outside the `isNew` guard. Once the ladder is at the top the
@@ -306,6 +330,7 @@ export function createBelay(
                   trigger: worst.trigger,
                   reason: `account ${outcome.target.channel}:${outcome.target.accountId} is now stopped`,
                   at: now(),
+                  action: "paused",
                 },
                 now(),
               );
@@ -322,6 +347,7 @@ export function createBelay(
                     "openclaw gateway call channels.stop --params " +
                     `'{"channel":"${target?.channel ?? "<channel>"}","accountId":"${ctx.accountId ?? "<accountId>"}"}'`,
                   at: now(),
+                  pauseFailed: true,
                 },
                 now(),
               );
