@@ -121,13 +121,16 @@ The Anthropic rows are untestable rather than negative: OpenClaw 2026.8.2 reject
 both models with `provider rejected the request schema or tool payload`, on two different agents
 (one with a full tool surface, one with a twenty-item deny list), using a key that authenticated
 successfully. No call reached the model, so its usage reporting is unknown. Reported upstream as
-[openclaw/openclaw#141582](https://github.com/openclaw/openclaw/issues/141582); still reproducible
+[openclaw/openclaw#141582](https://github.com/openclaw/openclaw/issues/141582), which was closed as
+superseded by the canonical open report
+[openclaw/openclaw#134951](https://github.com/openclaw/openclaw/issues/134951); still reproducible
 a week later on the same version.
 
 ## Honest limits
 
-1. **The estimate is order-of-magnitude, not accounting.** Treat an estimated figure as ±50% on
-   realistic content, and worse at the extremes. Do not reconcile it against a provider invoice.
+1. **The estimate is order-of-magnitude, not accounting.** At the default divisor the ten samples
+   above span −60% to +125%, and four of them fall outside ±50% — including three ordinary prose
+   samples. Do not reconcile an estimated figure against a provider invoice.
 2. **Set estimated caps with margin.** If a $5/day cap matters, and your content sits at the dense
    end, real spend at the moment it trips could be materially higher than $5.
 3. **This calibration is for `google/gemini-3.8-flash` only.** Every provider has its own

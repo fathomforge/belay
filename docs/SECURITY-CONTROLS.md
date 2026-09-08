@@ -47,6 +47,10 @@ the volume. `requestBytesPerMinute` and `requestBytesPerDay` bound how much data
 the model provider before the run is stopped and you are alerted. **The exfiltration is bounded in
 size and duration rather than unlimited.**
 
+Bounded, not prevented, and the bound is loose: the call that crosses the threshold still completes,
+and if the agent is not calling tools the stop lands at the next run rather than mid-run. Size the
+limit as "how much am I willing to lose", not "how much will be sent".
+
 This is deliberately a volume control, not a content control. Belay never reads what is in the
 request — see "Honest limits" below.
 
@@ -66,7 +70,8 @@ A bot serving people you do not fully control is an abuse surface. Someone works
 particular phrasing sends it into a long, expensive reasoning loop, and repeats it.
 
 Per-agent limits mean the group bot has its own budget and its own rate ceiling, isolated from your
-other agents. The blast radius of abusing one bot is one bot.
+other agents. The blast radius of abusing one bot is one bot's budget — provided you set per-agent
+limits; a single global limit is a shared pool that one noisy agent can exhaust for the others.
 
 ### 4. Provider degradation becomes self-inflicted denial of service
 
@@ -82,7 +87,7 @@ everything else on the same credentials.
 Something went wrong at 3am. Which agent, when, how much, and what stopped it?
 
 Belay's flight recorder is a local append-only JSONL trail — one line per decision, with the agent,
-the rule, the measured value and the threshold. `belay incidents --hours 168` reconstructs the
+the rule, the measured value and the threshold. `npx @fathomforge/belay incidents --hours 168` reconstructs the
 timeline. It works when the gateway is down, because it reads files rather than asking the gateway.
 
 Most agent deployments have no answer to those questions at all.

@@ -19,7 +19,11 @@ it upstream to the OpenClaw project** and tell you that's what happened.
 
 **By design, it never reads:**
 
-| Not accessed | Why it's structurally impossible, not just avoided |
+Belay is privileged in-process code, not a sandbox. Some hook payloads it receives do carry
+conversation content; the table below describes auditable restraint in what the code reads and
+keeps, not a privilege boundary that would make a bug or a malicious change harmless.
+
+| Not read or retained | How the code avoids it |
 |---|---|
 | Prompts | The `llm_output` hook carries `prompt`; Belay's usage type has no field for it |
 | Agent replies | Same — `assistantTexts` is never read |
@@ -80,7 +84,9 @@ A guardrail plugin with a backdoor would be the worst possible outcome, so:
 
 - **Zero runtime dependencies.** Nothing third-party is installed into your gateway.
 - **No `postinstall` or `preinstall` scripts.**
-- Dev dependencies are pinned and limited to TypeScript and `@types/node`.
+- Dev dependencies are limited to TypeScript and `@types/node`, and are pinned by the committed
+  lockfile (`package.json` carries a caret range for `@types/node`; `npm ci` installs the locked
+  version).
 - Releases are published with npm provenance and signed tags.
 - `npm pack` contents are reviewed before release; the published package contains only `dist/`,
   `bin/`, the manifest, and documentation.
