@@ -5,6 +5,65 @@ All notable changes to Belay are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-07
+
+A second independent review pass. The headline item is an enforcement gap, not a wording problem:
+the model-storm incident this project was built around met no gate at all.
+
+### Fixed — enforcement
+
+- **A model-call-rate breach now gates the next run.** `model_call_rate` and
+  `request_bytes_minute` were evaluated only on the tool and model-call surfaces, so an agent that
+  looped without ever calling a tool met no gate: the ladder climbed to `endRun` and the following
+  run was still allowed through. Spend and byte budgets did not cover it either — spend needs a
+  provider that reports usage, and the byte limits are unset by default. Both triggers are now on
+  the run gate, so a persistent storm is refused while it is still inside the window and allowed
+  again once it ages out. `modelCallsPerMinute` ships on by default, so this is covered on a stock
+  install. Tool-gate-only triggers (`identicalToolCalls`, `toolCallsPerMinute`,
+  `toolErrorsPerMinute`) are unchanged and still cannot bound a model-only loop.
+
+### Fixed — reporting
+
+- **`belay status` shows a request-bytes column.** The metering acceptance procedure added in 0.2.0
+  told you to watch a byte total that the command never printed. Worse, on a provider that reports
+  no token usage the only visible figure — spend — sits at `$0` forever, and the README diagnosed
+  an unchanged figure as "Belay is seeing nothing". A healthy install could not pass its own check.
+- **`$0` spend against non-zero bytes is now explained** in the status output as the signature of a
+  provider that reports no usage, rather than left to read as "nothing was spent".
+- **A corrupt trail is no longer reported as an empty one.** A file whose lines all fail to parse,
+  or a record whose timestamp cannot be parsed, is `unreadable` with exit 2 instead of a clean
+  zero-incident result. Partially damaged trails still report their surviving records, and now
+  disclose how many were skipped.
+- **A stored ladder rung is no longer described as an action that happened.** Observe mode advances
+  the ladder without acting, so with no corroborating trail record `status` says
+  `ladder at endRun; action unverified` instead of `ended a run`.
+- **A malformed `--hours` is rejected** with exit 1. `Number("garbage")` is `NaN` and every
+  `>= NaN` comparison is false, so an unvalidated value silently discarded every real incident and
+  still reported success.
+- The empty-trail advice in both commands now points at the request-bytes counter, which settles
+  whether metering is happening, instead of the startup log line, which only proves the plugin
+  loaded.
+
+### Fixed — documentation
+
+- Enforcement overshoot is no longer described as "roughly one call": a burst can put several calls
+  in flight between gate evaluations, and the startup settling window suppresses escalation.
+- `docs/SECURITY-CONTROLS.md` said "it cannot read your content" and "it cannot see content, by
+  design" while the README had already been corrected to say hook payloads carry content. Both now
+  describe auditable restraint rather than isolation, as does `SECURITY.md`'s recorder paragraph.
+- The claim that a single global limit is "a shared pool that one noisy agent can exhaust for the
+  others" was wrong — metering is scoped per agent and a global limit is the default threshold for
+  each scope. Corrected, with the genuinely shared upstream resources described separately.
+- The 0.1.0 changelog entry now carries a note identifying the descriptions that later releases
+  corrected, rather than leaving them standing as unqualified history.
+
+### Added
+
+- `CHANGELOG.md` ships in the npm package.
+- Tests for run-gate model-rate enforcement and window ageing, and CLI regression tests for corrupt
+  trails, unparseable timestamps, unverified ladder actions, the byte column and `--hours`
+  validation.
+
 ## [0.2.1] - 2026-09-07
 
 ### Fixed
@@ -35,7 +94,8 @@ release fixes the CLI behaviour and corrects the claims.
   "never read anything", and a consumer treating the second as the first is the same silent
   all-clear in machine-readable form.
 - An empty trail is now reported as empty *and* labelled as insufficient evidence that metering is
-  working, pointing at the gateway log check that actually settles it.
+  working. (0.3.0 corrects the follow-up advice: the request-bytes counter in `belay status`
+  settles metering; the startup log line only proves the plugin loaded.)
 
 ### Fixed — documentation claims that did not hold
 
@@ -70,6 +130,15 @@ release fixes the CLI behaviour and corrects the claims.
   commands, in text and JSON, including exit codes.
 
 ## [0.1.0] - 2026-09-07
+
+> [!NOTE]
+> Some descriptions in this 0.1.0 entry were later found to be wrong and were corrected in 0.2.0
+> and 0.3.0. Specifically: request-size limits were described as working on any provider (they need
+> the gateway to report transport bytes, which not every provider does); estimation error was given
+> as ±50% (the measured range is −60% to +125% at the default divisor); and `channels.stop` and
+> resume were listed as verified when the pause rung is in fact refused on 2026.8.2. The entry is
+> left as published, with this note, rather than silently rewritten.
+
 
 First release. Spend caps, rate limits and a graceful pause ladder for OpenClaw agents, running
 in-process with zero runtime dependencies and no network calls except the alerts you configure.

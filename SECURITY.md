@@ -40,8 +40,10 @@ identifiers, and its own configuration block.
 - `recorder.file` — one JSONL line per decision: scope, rung, rule, the number that broke it, and
   a plain-English reason built from numbers
 
-Neither has a field for message content. The recorder rebuilds each record field by field, so a bug
-elsewhere in the plugin cannot cause content to be written.
+Neither has a field for message content. The recorder rebuilds each record field by field, so content
+cannot ride along inside a passed-through object. That is a meaningful reduction in accidental
+leakage, not a proof that no bug could ever write content: this is privileged in-process code, and
+the hook payloads it receives do carry conversation text.
 
 ## Network
 

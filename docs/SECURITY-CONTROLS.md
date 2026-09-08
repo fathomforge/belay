@@ -70,8 +70,12 @@ A bot serving people you do not fully control is an abuse surface. Someone works
 particular phrasing sends it into a long, expensive reasoning loop, and repeats it.
 
 Per-agent limits mean the group bot has its own budget and its own rate ceiling, isolated from your
-other agents. The blast radius of abusing one bot is one bot's budget — provided you set per-agent
-limits; a single global limit is a shared pool that one noisy agent can exhaust for the others.
+other agents. Metering is scoped per agent, and a global limit acts as the default threshold
+applied to each scope independently — so one noisy agent exhausts its own allowance, not a shared
+pool. Per-agent entries override that default where one bot deserves a tighter or looser bound.
+
+What is genuinely shared is everything upstream of Belay: provider credentials, rate limits and
+quota. A bot burning its own budget can still exhaust a provider quota the others depend on.
 
 ### 4. Provider degradation becomes self-inflicted denial of service
 
@@ -102,10 +106,13 @@ A security control that expands your attack surface is a bad trade. Belay is bui
 - **No network by default.** With no alert configuration, no HTTP transport object is constructed at
   all. This is asserted by a test, not merely intended.
 - **No telemetry, ever.** No phone-home, no update check, no analytics.
-- **It cannot read your content.** Prompts and replies are never read. Tool parameters are
-  SHA-256 hashed before counting; the hash is what is stored. The recorder rebuilds every record
-  field by field, so a bug elsewhere cannot smuggle text onto disk. There is a test that passes a
-  sensitive value through and asserts it never reaches the file.
+- **It does not read your content.** No prompt or reply field is ever read. Tool parameters are
+  SHA-256 hashed before counting -- they pass through memory to be hashed, and only the hash is
+  retained. The recorder rebuilds every record field by field, which stops content riding along in
+  a passed-through object; a test passes a sensitive value through and asserts it never reaches the
+  file. This is auditable restraint in privileged in-process code, not a privilege boundary: a bug
+  here could reach what the hook payload carries. The code is small and dependency-free so that you
+  can check rather than trust.
 - **Fail open on bugs, fail closed on policy.** A defect in Belay degrades to *no guardrail* — never
   to a downed gateway or a blocked message. Your availability never depends on this code being
   bug-free; only your cost protection does.
@@ -117,9 +124,9 @@ A security document that only lists strengths is marketing. These are the bounda
 1. **Belay is a bounding and detective control, not a preventive one.** It will not stop a prompt
    injection, detect a malicious instruction, or tell you *what* was sent. It caps volume and rate,
    and it tells you when something crossed a line.
-2. **It cannot see content, by design.** That is what makes it safe to install, and it is also why
-   it cannot distinguish an agent sending 10 MB of public documentation from 10 MB of your private
-   files. It bounds size, not sensitivity.
+2. **It does not look at content, by design.** That is what keeps it cheap to install, and it is
+   also why it cannot distinguish an agent sending 10 MB of public documentation from 10 MB of your
+   private files. It bounds size, not sensitivity.
 3. **An operator with config write access can disable it.** It is a safety belt for your own agents,
    not a control that constrains a hostile administrator. Protect `openclaw.json` accordingly.
 4. **It does not replace tool allowlists, sandboxing, or a security audit.** Those constrain what an

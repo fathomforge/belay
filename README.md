@@ -147,12 +147,17 @@ interrupt a model call that is already in flight.
 What that means concretely:
 
 - **A limit is checked when a hook fires, so the call that crosses the line still completes.**
-  Expect overshoot of roughly one call beyond the threshold. Set caps below the number that would
-  actually hurt, not at it.
+  Overshoot is at least that call, and can be more: a burst can put several calls in flight between
+  two gate evaluations, and the startup settling window suppresses escalation on purpose. Set caps
+  below the number that would actually hurt, not at it.
 - **A tool-driven loop is stopped quickly**, because every tool call passes through a gate.
-- **A model-only loop — one that never calls a tool — is stopped at the boundary of the next run,
-  not mid-run.** This is the weakest case, and it is the one a runaway agent is most likely to hit.
-  Rate and byte limits still record and alert throughout; the *blocking* arrives at the next run.
+- **A model-only loop — one that never calls a tool — is refused at the next run**, provided a
+  trigger the run gate can act on has fired. `modelCallsPerMinute` is one of those and is on by
+  default, so the common model-storm case is covered out of the box. It is still a *next-run* stop,
+  not a mid-run one.
+- **A limit that only the tool gate evaluates cannot stop an agent that never calls a tool.**
+  `identicalToolCalls`, `toolCallsPerMinute` and `toolErrorsPerMinute` are tool-gate triggers by
+  nature. Do not rely on them alone to bound a model loop.
 - **None of these are hard ceilings on your invoice.** They bound how far a breach runs, not how
   much the breach in progress can cost.
 
@@ -165,19 +170,24 @@ The startup line only proves the plugin loaded. The README above warns that a pl
 itself active while its hooks are blocked — so confirm a real turn moved a counter:
 
 ```bash
-# 1. Note the current byte total (or "no state yet")
+# 1. Note the "request bytes" figure for your agent (or "no state yet")
 npx @fathomforge/belay status --state <stateFile> --trail <trailFile>
 
-# 2. Send one ordinary turn through any agent
+# 2. Send one ordinary turn through that agent
 openclaw agent --agent <your-agent> --message "Reply with the single word: ok"
 
 # 3. Wait for the state file to be written -- it flushes about every 10 seconds,
 #    so checking immediately will show the old number and look like a failure
 sleep 15
 
-# 4. The same command should now show a larger figure for that agent
+# 4. The "request bytes" figure for that agent should now be larger
 npx @fathomforge/belay status --state <stateFile> --trail <trailFile>
 ```
+
+**Watch the byte column, not the dollar column.** Bytes are counted from transport metadata and
+move on any provider that reports them. Spend only moves if your provider reports token usage — and
+[on some it never does](#provider-support), so a spend figure frozen at `$0` is expected there and
+proves nothing either way. `status` flags that case explicitly.
 
 If the number still does not move, Belay is loaded but seeing nothing. In order of likelihood:
 you checked before the flush landed (wait and look again); `hooks.allowConversationAccess` is not
