@@ -100,8 +100,11 @@ Restart the gateway, then **verify — don't assume**:
 
 ```bash
 openclaw config get plugins.entries.belay
-openclaw logs --limit 50 | grep belay      # expect a "belay active: ..." line
+openclaw logs --limit 200 | grep 'belay\] active'   # expect a "[belay] active: caps=..." line
 ```
+
+A smaller `--limit` often misses it: the line is written once at startup, and a busy gateway
+produces enough channel-polling output to push it out of a short tail.
 
 > [!WARNING]
 > **Setting `"enabled": true` for a plugin that isn't actually installed will block your gateway
@@ -134,10 +137,32 @@ setting can't be defeated by a stale override.
 
 ## See what it's doing
 
+Belay ships a CLI in the same package. Installing the plugin does **not** put `belay` on your
+`PATH` — OpenClaw installs plugins into its own managed npm prefix — so run it with `npx`:
+
 ```bash
-belay status
-belay incidents --hours 24
-belay incidents --agent my-group-bot --json
+npx @fathomforge/belay status
+npx @fathomforge/belay incidents --hours 24
+npx @fathomforge/belay incidents --agent my-group-bot --json
+```
+
+It reads the two files you configured, which it cannot guess. Pass them explicitly:
+
+```bash
+npx @fathomforge/belay status \
+  --state /home/node/.openclaw/belay-state.json \
+  --trail /home/node/.openclaw/belay-trail.jsonl
+```
+
+…or set `BELAY_STATE_FILE` and `BELAY_TRAIL_FILE` once and drop the flags. With neither, `belay`
+tells you the paths are unconfigured rather than pretending there is nothing to report.
+
+If your gateway runs in Docker, run it inside the container, where those paths exist:
+
+```bash
+docker exec -e BELAY_STATE_FILE=/home/node/.openclaw/belay-state.json \
+            -e BELAY_TRAIL_FILE=/home/node/.openclaw/belay-trail.jsonl \
+            <container> npx @fathomforge/belay status
 ```
 
 ```
@@ -274,7 +299,7 @@ What a provider reports decides which controls work. Measured on OpenClaw 2026.8
 |---|---|---|---|
 | **OpenAI** (`gpt-5.4-nano`) | **✓ reported** | ✗ absent | **Exact dollar caps.** Set prices and go |
 | **Google** (`gemini-3.8-flash`) | ✗ absent | **✓ reported** | **Exact request-size limits** |
-| Anthropic | untested | untested | OpenClaw 2026.8.2 could not complete a request to any Anthropic model ([#141582](https://github.com/openclaw/openclaw/issues/141582)) |
+| Anthropic | untestable | untestable | OpenClaw 2026.8.2 could not complete a request to any Anthropic model, so neither signal could be observed ([#134951](https://github.com/openclaw/openclaw/issues/134951)) |
 
 **Neither provider gives both signals**, which is why Belay carries both mechanisms and uses
 whichever is available. If your provider reports usage you get exact spend caps; if it reports
@@ -365,8 +390,10 @@ live five-agent gateway serving real users. Things that only showed up there, an
 - A gateway restart drains the ingress spool as a burst, so the first minutes after startup are not
   representative traffic. Hence the settling window.
 
-Enforcement, blocking, the flight recorder, `channels.stop` and resume have all been exercised
-against a live gateway, not only in tests.
+Metering, enforcement, tool blocking, run-ending and the flight recorder have all been exercised
+against a live gateway, not only in tests. The `channels.stop` pause rung was exercised too — and
+**refused by the gateway**, which is how the limitation above was found. It is documented as not
+working rather than listed as verified.
 
 ## Requirements
 
