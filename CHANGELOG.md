@@ -5,6 +5,16 @@ All notable changes to Belay are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-09-07
+
+### Fixed
+
+- The "Prove it is actually metering" procedure added in 0.2.0 told you to re-read the state file
+  immediately after sending a test turn. The state file flushes about every 10 seconds, so a
+  correctly working install showed an unchanged number and looked broken. The procedure now waits,
+  and names the flush as the first thing to suspect. Found by running the documented steps against
+  a live gateway rather than reasoning about them.
+
 ## [0.2.0] - 2026-09-07
 
 An independent first-customer review found that the CLI reported a clean bill of health it had not

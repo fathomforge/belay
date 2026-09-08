@@ -171,13 +171,17 @@ npx @fathomforge/belay status --state <stateFile> --trail <trailFile>
 # 2. Send one ordinary turn through any agent
 openclaw agent --agent <your-agent> --message "Reply with the single word: ok"
 
-# 3. The same command should now show a larger figure for that agent
+# 3. Wait for the state file to be written -- it flushes about every 10 seconds,
+#    so checking immediately will show the old number and look like a failure
+sleep 15
+
+# 4. The same command should now show a larger figure for that agent
 npx @fathomforge/belay status --state <stateFile> --trail <trailFile>
 ```
 
-If the number does not move, Belay is loaded but seeing nothing. In order of likelihood:
-`hooks.allowConversationAccess` is not set; the plugin entry is disabled; or the gateway was not
-restarted after the config change.
+If the number still does not move, Belay is loaded but seeing nothing. In order of likelihood:
+you checked before the flush landed (wait and look again); `hooks.allowConversationAccess` is not
+set; the plugin entry is disabled; or the gateway was not restarted after the config change.
 
 An empty incident trail is **not** evidence of metering — a plugin that never registered a hook
 also records nothing. That is why the CLI distinguishes "read the trail, found nothing" from
