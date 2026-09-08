@@ -85,7 +85,25 @@ test("only known fields reach disk, whatever the caller passes", () => {
     "scope",
     "t",
     "trigger",
+    "v",
   ]);
+});
+
+test("the schema version survives the writer, not just toRecord", () => {
+  // `v` was added to the record type and to toRecord but not to the writer's
+  // explicit field list, so every record on disk was unversioned -- and the CLI,
+  // which distrusts unversioned actions, distrusted all of them. The fix was
+  // inert in production while its unit tests passed, because they asserted on
+  // toRecord's return value and on hand-written fixtures. Only a real
+  // write-then-read round trip can catch that, so this test does one.
+  const file = join(tmp(), "trail.jsonl");
+  const r = new Recorder({ file, maxBytes: 1_000_000 }, makeLogger());
+  r.write(toRecord(T0, "main", "endRun", "spend_day", 3, 2, "over cap", "agent_run"));
+
+  const onDisk = JSON.parse(readFileSync(file, "utf8").trim());
+  assert.equal(onDisk.v, 2, "the version must reach disk");
+  assert.equal(onDisk.action, "ended");
+  assert.equal(parseTrail(readFileSync(file, "utf8"))[0]?.v, 2, "and survive parsing back");
 });
 
 test("the trail is written with restrictive permissions", () => {

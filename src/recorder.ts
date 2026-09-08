@@ -89,6 +89,14 @@ export class Recorder {
       mkdirSync(dirname(this.config.file), { recursive: true });
       // Rebuild the object field by field: nothing reaches disk that is not on
       // this list, whatever the caller passed in.
+      //
+      // `v` has to be on the list. It was added to the record type without
+      // being added here, so every record written by 0.5.0 reached disk
+      // unversioned -- and the reader, which treats unversioned records as
+      // untrustworthy, therefore distrusted all of them. The fix was inert in
+      // production while its unit tests passed, because they asserted on
+      // `toRecord`'s return value and on hand-written fixtures rather than on a
+      // file that had actually been through this writer.
       const line = JSON.stringify({
         t: record.t,
         scope: record.scope,
@@ -98,6 +106,7 @@ export class Recorder {
         limit: record.limit,
         reason: record.reason,
         action: record.action,
+        v: record.v,
       });
       appendFileSync(this.config.file, `${line}\n`, { mode: 0o600 });
     } catch (err) {
@@ -142,7 +151,7 @@ export class Recorder {
  *   tool_call  refuses anything above warn
  *   model_call refuses nothing -- it can only escalate
  */
-function actionFor(surface: RecordSurface, rung: RungName): Record["action"] {
+export function actionFor(surface: RecordSurface, rung: RungName): Record["action"] {
   if (rung === "none" || rung === "warn") return "logged";
   switch (surface) {
     case "agent_run":
@@ -152,6 +161,16 @@ function actionFor(surface: RecordSurface, rung: RungName): Record["action"] {
     default:
       return "escalated";
   }
+}
+
+/**
+ * Does the gate at `surface` actually refuse something at `rung`?
+ *
+ * True only where a record may claim completed enforcement.
+ */
+export function enforcesAt(surface: RecordSurface, rung: RungName): boolean {
+  const a = actionFor(surface, rung);
+  return a === "blocked" || a === "ended" || a === "paused";
 }
 
 /** Which hook is writing the record. Mirrors the enforcer's `Surface`. */

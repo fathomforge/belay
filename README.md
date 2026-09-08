@@ -269,6 +269,10 @@ Each line records the rung the ladder reached **and** what the hook that wrote i
 | `blocked` | a tool call was refused, by the tool gate that returned the refusal |
 | `ended` | a run was refused, by the run gate that returned the refusal |
 
+Reports name the **action**, not the rung: a tool gate refusing a call while the ladder sits at
+`endRun` blocked a tool, and says so. One outcome is recorded per gate and rung until the ladder
+moves, so a refusal is provable without a line per blocked call.
+
 `escalated` exists because deriving the action from the rung was wrong in the direction that
 matters: a model storm reaching `endRun` during a model-call notification used to record `ended`
 while no run had been ended by anyone. `belay status` will not describe a run as ended unless a

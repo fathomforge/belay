@@ -22,7 +22,7 @@ import type { Alerter } from "./alerts.ts";
 import { estimateFromBytes, PendingBytes, UsageReporting } from "./estimate.ts";
 import type { CallBytes } from "./estimate.ts";
 import type { Pauser } from "./pauser.ts";
-import { toRecord } from "./recorder.ts";
+import { enforcesAt, toRecord } from "./recorder.ts";
 import type { Recorder } from "./recorder.ts";
 import type { HookUsage, RungName } from "./types.ts";
 
@@ -181,6 +181,9 @@ export function createBelay(
    * Ask the policy what should happen, and move the ladder if anything breached.
    * Returns the rung to act on, or undefined when everything is within limits.
    */
+  /** One outcome record per (scope, surface, rung) until the ladder moves. */
+  const outcomeRecorded = new Set<string>();
+
   function assess(ctx: AgentCtx, surface: Surface): { rung: RungName; reason: string } | undefined {
     const at = now();
     const scope = meter.scope(ctx.agentId, ctx.sessionKey);
@@ -214,6 +217,30 @@ export function createBelay(
     const settling = at - startedAt < config.settleAfterRestartMs;
     const rung = observing || settling ? "warn" : step.rung;
 
+    // The gate at this surface is about to refuse something. That is a real
+    // enforcement event and it must reach the trail -- but it cannot ride on
+    // `step.isNew`, because once the ladder sits at its ceiling no step is ever
+    // new again, and the refusal that actually happens would never be recorded.
+    // So outcomes are deduplicated on their own key: one record per
+    // (scope, surface, rung) until the ladder moves, which is enough to prove a
+    // gate acted without writing a line per blocked call.
+    if (!observing && !settling && enforcesAt(surface, rung)) {
+      const key = `${scope.key}|${surface}|${rung}`;
+      if (step.isNew) for (const k of [...outcomeRecorded]) {
+        if (k.startsWith(`${scope.key}|`)) outcomeRecorded.delete(k);
+      }
+      if (!outcomeRecorded.has(key)) {
+        outcomeRecorded.add(key);
+        try {
+          effects.recorder?.write(
+            toRecord(at, scope.key, rung, worst.trigger, worst.observed, worst.limit, worst.reason, surface),
+          );
+        } catch {
+          // Recording an outcome must never cancel it. Same trade as below.
+        }
+      }
+    }
+
     // Side effects fire only on a *new* step. Everything below this line is
     // deduplicated by the ladder, which is why 300 identical failures produce
     // one Telegram message rather than 300.
@@ -231,7 +258,9 @@ export function createBelay(
             ` for ${worst.reason}`,
         );
 
-        effects.recorder?.write(
+        // Skip when the outcome record above already described this exact
+        // decision at this surface -- otherwise a real refusal writes twice.
+        if (!(!observing && !settling && enforcesAt(surface, rung))) effects.recorder?.write(
           toRecord(
             at,
             scope.key,

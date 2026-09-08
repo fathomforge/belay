@@ -150,7 +150,14 @@ function explainMissing(res, what, configKey, flag, envVar) {
   }
 }
 
-/** How an action reads in a report. `escalated` is deliberately not past-tense. */
+/** What each completed action did. Keyed by action, never by rung. */
+const ACTION_LABEL = {
+  blocked: "blocked a tool",
+  ended: "ended a run",
+  paused: "PAUSED an account",
+};
+
+/** How a rung reads when describing something hypothetical. */
 const RUNG_LABEL = {
   none: "ok",
   warn: "warned",
@@ -195,6 +202,33 @@ function corroboration(trail, scope) {
     best = r;
   }
   return best;
+}
+
+/**
+ * How one record reads, from what the writing hook actually did.
+ *
+ * Rendering the *rung* here was the same false-enforcement claim status used to
+ * make: an `escalated` record from a model-call notification printed
+ * "ended a run" although no gate had been called.
+ */
+function describeAction(r) {
+  switch (r.action) {
+    case "escalated":
+      return `escalated to ${r.rung}`;
+    case "logged":
+      // Hypothetical, so the rung is the right thing to name.
+      return `would have ${RUNG_LABEL[r.rung] ?? r.rung}`;
+    case "blocked":
+    case "ended":
+    case "paused": {
+      // Name what was *done*, not the rung. A tool gate refusing a call while
+      // the ladder sits at endRun blocked a tool; it did not end a run.
+      const label = ACTION_LABEL[r.action];
+      return (r.v ?? 0) >= 2 ? label : `${label} (unverified)`;
+    }
+    default:
+      return String(r.action ?? "recorded");
+  }
 }
 
 /** Actions that mean a gate actually refused something. */
@@ -283,7 +317,7 @@ function status(opts) {
               : rec.action === "escalated"
                 ? `  <- ladder at ${rung}; enforced at the next gate`
                 : enforcementProven(rec)
-                  ? `  <- ${label}`
+                  ? `  <- ${ACTION_LABEL[rec.action] ?? label}`
                   : `  <- ladder at ${rung}; action unverified (pre-v2 record)`;
       const spend = s.day?.total ?? 0;
       const bytes = s.dayBytes?.total ?? 0;
@@ -457,7 +491,7 @@ function incidents(opts) {
     lines.push("");
   }
   for (const r of records) {
-    lines.push(`${r.t}  ${(RUNG_LABEL[r.rung] ?? r.rung).padEnd(14)} ${r.scope}`);
+    lines.push(`${r.t}  ${describeAction(r).padEnd(30)} ${r.scope}`);
     lines.push(`    ${r.reason}`);
     lines.push(`    rule=${r.trigger} observed=${r.observed} limit=${r.limit}`);
   }

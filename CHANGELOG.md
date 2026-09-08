@@ -5,6 +5,39 @@ All notable changes to Belay are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-07
+
+A fifth review pass, on the fix from the fourth. The producer-side correction was right and three
+things around it were not — and the most important one made the whole fix inert in production.
+
+### Fixed
+
+- **The schema version never reached disk.** `Recorder.write` rebuilds each record from an explicit
+  field list — the property that keeps content off disk — and `v` was added to the record type and
+  to `toRecord` without being added to that list. So every record written by 0.5.0 was unversioned,
+  and the reader, which deliberately distrusts unversioned actions, distrusted all of them:
+  `actionVerified` was **always false**. The unit tests passed throughout, because they asserted on
+  `toRecord`'s return value and on hand-written fixtures instead of on a file that had been through
+  the writer.
+- **The gate refusal that actually happens is now recorded.** Reporting was deduplicated on ladder
+  transitions, which is right for alerts and wrong for outcomes: once the ladder sits at its
+  ceiling no step is ever new again, so the run gate could return `block` and write nothing at all.
+  Outcomes now have their own deduplication key — one record per (scope, surface, rung) until the
+  ladder moves — so a real refusal is provable without writing a line per blocked call.
+- **`belay incidents` described escalation as enforcement.** It rendered the ladder rung, so an
+  `escalated` record from a model-call notification printed "ended a run" — the same false claim
+  0.5.0 removed from `status`, still live in the other customer-facing command.
+- **Labels now name the action, not the rung.** A tool gate refusing a call while the ladder sits at
+  `endRun` blocked a tool; it did not end a run. Both commands said the latter.
+
+### Added
+
+- `test/integration.test.ts`: producer → real Recorder → real file → real CLI, in one test. It
+  covers the storm-before-any-gate case, the refusal that follows, deduplication, version
+  persistence, observe mode, the settling window, a tool-gate refusal, and genuinely old
+  unversioned records. Every defect above is invisible to a test that stops at `toRecord` or starts
+  from a fixture, which is precisely why the previous three rounds of this fix kept passing.
+
 ## [0.5.0] - 2026-09-07
 
 A fourth review pass, and the most serious finding so far: the flight recorder — the evidence
