@@ -5,6 +5,42 @@ All notable changes to Belay are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-07
+
+A third review pass. The 0.3.0 enforcement fix held; these are three places where the *previous*
+round of reporting fixes was incomplete.
+
+### Fixed
+
+- **The metering check no longer misdiagnoses a token-only provider.** 0.3.0 told you to watch the
+  request-bytes counter and treated a frozen one as "loaded but seeing nothing" — but this
+  project's own provider table says OpenAI reports token usage and *not* transport bytes, so a
+  perfectly healthy install on that provider would have been condemned by its own acceptance check.
+  This was the mirror image of the bug the byte column was added to fix. The procedure now names
+  both signals, says which to watch for which provider, and reports "inconclusive" rather than
+  "broken" when a provider reports neither.
+- **`belay status --json`** emits exact, unrounded counters. The human table rounds to kB/MB/GB, so
+  a genuine increase could be invisible on a large total — making the before/after comparison
+  unreliable exactly where totals are biggest. It also reports `decisionsLast24h: null` when the
+  trail could not be read, rather than `0`.
+- **Partial trail corruption is now disclosed on every output path.** 0.3.0 counted skipped records
+  but only mentioned them in text output, and only when at least one record survived the requested
+  filter. So `incidents --json` returned `source: "ok"` with no hint of loss, a filtered window with
+  no surviving matches reported a clean empty result, and `status` reported a decision count drawn
+  from a damaged file. The skipped line could be the very incident being looked for. JSON now
+  carries `complete` and `skipped`; text warns before reporting an empty window; `status` marks its
+  count incomplete.
+- **A stale record can no longer corroborate a current ladder rung.** The lookup kept only the last
+  action string per scope, ignoring the record's rung and timestamp, so a `blockTool` from two days
+  ago made `status` print "ended a run" for an `endRun` rung reached later in observe mode — while
+  the same report said there had been zero decisions in 24h. Corroboration now requires a record
+  for the *same* rung, no older than the ladder action it claims to evidence.
+
+### Added
+
+- Regression tests for stale-versus-matching corroboration, partial corruption across JSON/status/
+  filtered-empty paths, provider-neutral metering advice, and exact `--json` counters.
+
 ## [0.3.0] - 2026-09-07
 
 A second independent review pass. The headline item is an enforcement gap, not a wording problem:
@@ -94,8 +130,8 @@ release fixes the CLI behaviour and corrects the claims.
   "never read anything", and a consumer treating the second as the first is the same silent
   all-clear in machine-readable form.
 - An empty trail is now reported as empty *and* labelled as insufficient evidence that metering is
-  working. (0.3.0 corrects the follow-up advice: the request-bytes counter in `belay status`
-  settles metering; the startup log line only proves the plugin loaded.)
+  working. (Corrected twice since: 0.3.0 replaced the startup-log advice with the request-bytes
+  counter, and 0.4.0 made that provider-aware — bytes or spend, whichever your provider reports.)
 
 ### Fixed — documentation claims that did not hold
 

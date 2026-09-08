@@ -170,8 +170,9 @@ The startup line only proves the plugin loaded. The README above warns that a pl
 itself active while its hooks are blocked — so confirm a real turn moved a counter:
 
 ```bash
-# 1. Note the "request bytes" figure for your agent (or "no state yet")
-npx @fathomforge/belay status --state <stateFile> --trail <trailFile>
+# 1. Record the exact counters. --json gives unrounded numbers; the human table
+#    rounds to kB/MB, so a real increase can be invisible on a large total.
+npx @fathomforge/belay status --state <stateFile> --trail <trailFile> --json > before.json
 
 # 2. Send one ordinary turn through that agent
 openclaw agent --agent <your-agent> --message "Reply with the single word: ok"
@@ -180,18 +181,27 @@ openclaw agent --agent <your-agent> --message "Reply with the single word: ok"
 #    so checking immediately will show the old number and look like a failure
 sleep 15
 
-# 4. The "request bytes" figure for that agent should now be larger
-npx @fathomforge/belay status --state <stateFile> --trail <trailFile>
+# 4. Compare
+npx @fathomforge/belay status --state <stateFile> --trail <trailFile> --json > after.json
+diff before.json after.json
 ```
 
-**Watch the byte column, not the dollar column.** Bytes are counted from transport metadata and
-move on any provider that reports them. Spend only moves if your provider reports token usage — and
-[on some it never does](#provider-support), so a spend figure frozen at `$0` is expected there and
-proves nothing either way. `status` flags that case explicitly.
+**Which number moves depends on your provider, and most report only one of the two:**
 
-If the number still does not move, Belay is loaded but seeing nothing. In order of likelihood:
-you checked before the flush landed (wait and look again); `hooks.allowConversationAccess` is not
-set; the plugin entry is disabled; or the gateway was not restarted after the config change.
+| your provider reports | watch | what a frozen counter means |
+|---|---|---|
+| transport bytes (e.g. Google here) | `requestBytes` | spend stays `$0` — expected, not a fault |
+| token usage (e.g. OpenAI here) | `spendUsd` | `requestBytes` stays `0` — expected, not a fault |
+| both | either | — |
+| neither | — | **inconclusive**: see below |
+
+**A fresh delta in either counter proves metering.** It does not prove enforcement — that a limit
+would actually fire — only that Belay is seeing traffic.
+
+If *neither* counter moves, check [Provider support](#provider-support) first: if your provider
+reports neither signal, this check cannot settle the question and you should not read it as
+failure. Otherwise, in order of likelihood: `hooks.allowConversationAccess` is not set; the plugin
+entry is disabled; or the gateway was not restarted after the config change.
 
 An empty incident trail is **not** evidence of metering — a plugin that never registered a hook
 also records nothing. That is why the CLI distinguishes "read the trail, found nothing" from
@@ -204,9 +214,14 @@ Belay ships a CLI in the same package. Installing the plugin does **not** put `b
 
 ```bash
 npx @fathomforge/belay status
+npx @fathomforge/belay status --json                        # exact counters, for scripts
 npx @fathomforge/belay incidents --hours 24
 npx @fathomforge/belay incidents --agent my-group-bot --json
 ```
+
+Both commands exit **2** when they could not read the files at all, so a script can tell "nothing
+happened" from "I have no idea". The `--json` output carries `source`, and `complete`/`skipped` so
+a damaged trail is never mistaken for a quiet one.
 
 It reads the two files you configured, which it cannot guess. Pass them explicitly:
 

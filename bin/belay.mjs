@@ -27,7 +27,7 @@ import { argv, exit, stdout } from "node:process";
 const USAGE = `belay - read the local Belay flight recorder
 
 Usage:
-  belay status    [--state <file>] [--trail <file>]
+  belay status    [--state <file>] [--trail <file>] [--json]
   belay incidents [--trail <file>] [--hours N] [--agent <id>] [--json]
   belay reset     [--state <file>] [--agent <id>]   clear a stuck ladder rung
 
@@ -170,10 +170,71 @@ function BYTES(n) {
   return `${Math.round(n)} B`;
 }
 
+/**
+ * Find a trail record that actually corroborates a scope's *current* rung.
+ *
+ * Matching on scope alone is not enough. A `blockTool` record from two days ago
+ * would otherwise license the label "ended a run" for a rung the agent reached
+ * later in observe mode -- inventing an enforcement event out of an unrelated
+ * older one. The record must be for the same rung, and no older than the ladder
+ * action it claims to evidence (with a little slack, because the state file and
+ * the trail are written by separate paths).
+ *
+ * Returns the corroborating record's `action`, or undefined when nothing in the
+ * trail supports the stored rung.
+ */
+function corroboration(trail, scope) {
+  const rung = scope.ladder?.rung ?? "none";
+  if (rung === "none") return undefined;
+  const since = (scope.ladder?.lastActionAt ?? 0) - 5000;
+  let best;
+  for (const r of trail) {
+    if (r.scope !== scope.key || r.rung !== rung) continue;
+    if (Date.parse(r.t) < since) continue;
+    best = r;
+  }
+  return best?.action;
+}
+
 function status(opts) {
   const stateRes = readState(opts.state);
   const trailRes = readTrail(opts.trail);
   const trail = trailRes.records;
+
+  if (opts.json) {
+    // Exact figures, for a before/after comparison the human table cannot
+    // support: the display rounds to kB/MB/GB, so a real increase can be
+    // invisible on a large total.
+    const dayAgo = Date.now() - 24 * 3600_000;
+    stdout.write(
+      `${JSON.stringify(
+        {
+          state: { source: stateRes.source, path: stateRes.path, error: stateRes.error },
+          trail: {
+            source: trailRes.source,
+            path: trailRes.path,
+            error: trailRes.error,
+            complete: (trailRes.skipped ?? 0) === 0,
+            skipped: trailRes.skipped ?? 0,
+          },
+          scopes: (stateRes.state?.scopes ?? []).map((s) => ({
+            agent: s.key,
+            day: s.day?.day,
+            spendUsd: s.day?.total ?? 0,
+            requestBytes: s.dayBytes?.total ?? 0,
+            ladderRung: s.ladder?.rung ?? "none",
+            actionVerified: corroboration(trail, s) !== undefined,
+          })),
+          decisionsLast24h:
+            trailRes.source === "ok" ? trail.filter((r) => Date.parse(r.t) >= dayAgo).length : null,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    if (stateRes.source !== "ok" || trailRes.source !== "ok") exit(2);
+    return;
+  }
 
   const lines = ["Belay status", ""];
 
@@ -190,14 +251,11 @@ function status(opts) {
     // run" would claim something that never occurred. And without a trail there
     // is no evidence either way -- the stored rung is a policy position, not a
     // record that anything was done -- so say so rather than assuming.
-    const lastAction = new Map();
-    for (const r of trail) lastAction.set(r.scope, r.action);
-
     let anyBlindSpend = false;
     for (const s of scopes) {
       const rung = s.ladder?.rung ?? "none";
-      const acted = lastAction.get(s.key);
       const label = RUNG_LABEL[rung] ?? rung;
+      const acted = corroboration(trail, s);
       const flag =
         rung === "none"
           ? ""
@@ -234,6 +292,12 @@ function status(opts) {
     const dayAgo = Date.now() - 24 * 3600_000;
     const recent = trail.filter((r) => Date.parse(r.t) >= dayAgo);
     lines.push(`  Decisions in the last 24h: ${recent.length}`);
+    // Partial damage has to reach every surface. A count drawn from a trail
+    // that lost records is a floor, not a total, and the lost record may be
+    // the one being looked for.
+    if (trailRes.skipped > 0) {
+      lines.push(`    (incomplete: ${trailRes.skipped} unreadable record(s) skipped)`);
+    }
     if (recent.length > 0) {
       const counts = {};
       for (const r of recent) counts[r.action] = (counts[r.action] ?? 0) + 1;
@@ -250,8 +314,10 @@ function status(opts) {
       // that distinguishes the two rather than declaring victory outright.
       lines.push(`    Nothing tripped, reading ${trailRes.path}.`);
       lines.push("    An empty trail means no decision was recorded, which is not by itself");
-      lines.push("    proof of metering -- the request-bytes column above is. If it is 0 for");
-      lines.push("    every agent after real traffic, Belay is loaded but seeing nothing.");
+      lines.push("    proof of metering. For that, send a turn and watch a column above");
+      lines.push("    change: bytes where your provider reports transport size, spend where");
+      lines.push("    it reports token usage. Many providers report one and not the other,");
+      lines.push("    so a column frozen at zero is only meaningful if the other moves.");
     }
   }
 
@@ -325,6 +391,10 @@ function incidents(opts) {
           hours: opts.hours,
           agent: opts.agent,
           error: res.error,
+          // A consumer must be able to tell a complete answer from a
+          // partial one without parsing prose.
+          complete: (res.skipped ?? 0) === 0,
+          skipped: res.skipped ?? 0,
           incidents: records,
         },
         null,
@@ -343,10 +413,19 @@ function incidents(opts) {
   }
 
   if (records.length === 0) {
+    // The skipped line could have been the incident being looked for, so this
+    // has to be said before reporting a quiet window, not only alongside hits.
+    if (res.skipped > 0) {
+      stdout.write(
+        `Warning: ${res.skipped} unreadable record(s) in ${res.path} were skipped.\n` +
+          "The result below is incomplete.\n\n",
+      );
+    }
     stdout.write(
       `No incidents recorded in the last ${opts.hours}h, reading ${res.path}.\n` +
         "An empty trail means no decision was recorded, which is not by itself proof\n" +
-        "of metering. Run `belay status` and check the request-bytes column.\n",
+        "of metering. Run `belay status` and check that a column moves after a turn --\n" +
+        "bytes or spend, depending on what your provider reports.\n",
     );
     return;
   }

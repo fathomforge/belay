@@ -94,7 +94,9 @@ test("a trail that was read and is empty is honestly reported as empty", () => {
   // and it must point at the counter that does settle it rather than at the
   // startup log line, which only proves the plugin loaded.
   assert.match(out, /not by itself proof/);
-  assert.match(out, /request-bytes column/);
+  // Provider-neutral: bytes and token usage are reported by different
+  // providers, so the advice must not pin the check to one of them.
+  assert.match(out, /bytes or spend, depending on what your provider reports/);
 });
 
 test("a trail with a decision reports it and exits 0", () => {
@@ -224,4 +226,107 @@ test("a malformed --hours fails loudly instead of hiding real incidents", () => 
 
 test("a negative --hours is rejected too", () => {
   assert.equal(run(["incidents", "--trail", trail, "--hours", "-5"]).code, 1);
+});
+
+// --- third-pass findings --------------------------------------------------
+
+test("a stale record for a different rung does not corroborate the current one", () => {
+  // A blockTool action from two days ago must not license the label "ended a
+  // run" for an endRun rung the agent reached later in observe mode. Matching
+  // on scope alone invented an enforcement event out of an unrelated older one.
+  const st = join(dir, "stale-state.json");
+  const tr = join(dir, "stale-trail.jsonl");
+  const twoDaysAgo = new Date(Date.now() - 48 * 3600_000).toISOString();
+  writeFileSync(
+    st,
+    JSON.stringify({
+      version: 1,
+      scopes: [{ key: "bot", day: { day: "2026-09-07", total: 1 }, dayBytes: { day: "2026-09-07", total: 10 }, ladder: { rung: "endRun", lastTriggerAt: Date.now(), lastActionAt: Date.now() } }],
+    }),
+  );
+  writeFileSync(tr, `${JSON.stringify({ t: twoDaysAgo, scope: "bot", rung: "blockTool", trigger: "tool_call_rate", observed: 9, limit: 5, reason: "old", action: "blocked" })}\n`);
+  const { out } = run(["status", "--state", st, "--trail", tr]);
+  assert.match(out, /action unverified/);
+  assert.doesNotMatch(out, /<- ended a run/);
+});
+
+test("a matching, current record does corroborate the rung", () => {
+  const st = join(dir, "fresh-state.json");
+  const tr = join(dir, "fresh-trail.jsonl");
+  const now = Date.now();
+  writeFileSync(
+    st,
+    JSON.stringify({
+      version: 1,
+      scopes: [{ key: "bot", day: { day: "2026-09-07", total: 1 }, dayBytes: { day: "2026-09-07", total: 10 }, ladder: { rung: "endRun", lastTriggerAt: now, lastActionAt: now } }],
+    }),
+  );
+  writeFileSync(tr, `${JSON.stringify({ t: new Date(now).toISOString(), scope: "bot", rung: "endRun", trigger: "model_call_rate", observed: 99, limit: 30, reason: "storm", action: "ended" })}\n`);
+  const { out } = run(["status", "--state", st, "--trail", tr]);
+  assert.match(out, /<- ended a run/);
+});
+
+test("partial corruption is disclosed in JSON, not only in prose", () => {
+  const mixed = join(dir, "mixed2.jsonl");
+  writeFileSync(
+    mixed,
+    `${JSON.stringify({ t: new Date().toISOString(), scope: "bot", rung: "warn", trigger: "model_call_rate", observed: 40, limit: 20, reason: "storm", action: "logged" })}\n{truncated`,
+  );
+  const { code, out } = run(["incidents", "--trail", mixed, "--json"]);
+  assert.equal(code, 0);
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.complete, false, "a consumer must see incompleteness without parsing prose");
+  assert.equal(parsed.skipped, 1);
+});
+
+test("partial corruption is disclosed even when the filter matches nothing", () => {
+  // The skipped line could be the very incident being looked for, so a quiet
+  // window must not be reported as if the evidence were whole.
+  const mixed = join(dir, "mixed3.jsonl");
+  const old = new Date(Date.now() - 48 * 3600_000).toISOString();
+  writeFileSync(
+    mixed,
+    `${JSON.stringify({ t: old, scope: "bot", rung: "warn", trigger: "model_call_rate", observed: 40, limit: 20, reason: "old", action: "logged" })}\n{truncated`,
+  );
+  const { out } = run(["incidents", "--trail", mixed, "--hours", "24"]);
+  assert.match(out, /unreadable record/);
+  assert.match(out, /incomplete/i);
+});
+
+test("status discloses partial corruption in its decision count", () => {
+  const mixed = join(dir, "mixed4.jsonl");
+  writeFileSync(
+    mixed,
+    `${JSON.stringify({ t: new Date().toISOString(), scope: "bot", rung: "warn", trigger: "model_call_rate", observed: 40, limit: 20, reason: "storm", action: "logged" })}\n{truncated`,
+  );
+  const { out } = run(["status", "--state", state, "--trail", mixed]);
+  assert.match(out, /incomplete/i);
+});
+
+test("the empty-trail advice does not diagnose a token-only provider as broken", () => {
+  // Bytes and token usage are reported by different providers. Telling someone
+  // whose provider reports tokens but not bytes that a zero byte column means
+  // "Belay is seeing nothing" is the mirror of the bug this column was added to
+  // fix, and would condemn a healthy install.
+  const { out } = run(["status", "--state", state, "--trail", emptyTrail]);
+  assert.doesNotMatch(out, /loaded but seeing nothing/);
+  assert.match(out, /bytes where your provider reports transport size, spend where/);
+});
+
+test("status --json exposes exact counters for a before/after comparison", () => {
+  // The human table rounds to kB/MB, so a real increase can be invisible on a
+  // large total. The acceptance check needs the raw number.
+  const { code, out } = run(["status", "--state", state, "--trail", trail, "--json"]);
+  assert.equal(code, 0);
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.scopes[0].requestBytes, 246075, "exact, not rounded");
+  assert.equal(parsed.scopes[0].spendUsd, 1.25);
+  assert.equal(parsed.trail.complete, true);
+});
+
+test("status --json reports unknown decisions as null, not zero", () => {
+  const { code, out } = run(["status", "--state", state]);
+  assert.equal(code, 2);
+  const { decisionsLast24h } = JSON.parse(run(["status", "--state", state, "--json"]).out);
+  assert.equal(decisionsLast24h, null, "unknown is not zero");
 });
