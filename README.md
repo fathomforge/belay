@@ -258,6 +258,25 @@ Belay status
 Both commands read local files directly, so they work even when the gateway is down — which is
 when you most want them.
 
+### What the flight recorder claims, and what it doesn't
+
+Each line records the rung the ladder reached **and** what the hook that wrote it actually did:
+
+| `action` | meaning |
+|---|---|
+| `logged` | recorded only. Observe mode, the startup settling window, or a rung the writing gate does not act on |
+| `escalated` | the ladder reached a blocking rung during a *notification* hook, which cannot stop anything. Enforcement follows at the next applicable gate |
+| `blocked` | a tool call was refused, by the tool gate that returned the refusal |
+| `ended` | a run was refused, by the run gate that returned the refusal |
+
+`escalated` exists because deriving the action from the rung was wrong in the direction that
+matters: a model storm reaching `endRun` during a model-call notification used to record `ended`
+while no run had been ended by anyone. `belay status` will not describe a run as ended unless a
+record from the gate that ended it says so.
+
+Records carry `v: 2`. Lines written by 0.4.0 and earlier have no `v`, and their `blocked`/`ended`
+were derived from the rung, so the CLI reports those as **unverified** rather than trusting them.
+
 ## Configuration
 
 Every limit is optional. **An unset limit is not enforced** — it is never treated as zero.

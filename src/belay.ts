@@ -244,6 +244,9 @@ export function createBelay(
               : settling
                 ? `${worst.reason} (settling after restart: would have been ${step.rung})`
                 : worst.reason,
+            // The surface decides what the record may claim: a notification
+            // hook cannot have blocked or ended anything.
+            surface,
           ),
         );
 

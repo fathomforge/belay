@@ -261,7 +261,7 @@ test("a matching, current record does corroborate the rung", () => {
       scopes: [{ key: "bot", day: { day: "2026-09-07", total: 1 }, dayBytes: { day: "2026-09-07", total: 10 }, ladder: { rung: "endRun", lastTriggerAt: now, lastActionAt: now } }],
     }),
   );
-  writeFileSync(tr, `${JSON.stringify({ t: new Date(now).toISOString(), scope: "bot", rung: "endRun", trigger: "model_call_rate", observed: 99, limit: 30, reason: "storm", action: "ended" })}\n`);
+  writeFileSync(tr, `${JSON.stringify({ t: new Date(now).toISOString(), scope: "bot", rung: "endRun", trigger: "model_call_rate", observed: 99, limit: 30, reason: "storm", action: "ended", v: 2 })}\n`);
   const { out } = run(["status", "--state", st, "--trail", tr]);
   assert.match(out, /<- ended a run/);
 });
@@ -329,4 +329,49 @@ test("status --json reports unknown decisions as null, not zero", () => {
   assert.equal(code, 2);
   const { decisionsLast24h } = JSON.parse(run(["status", "--state", state, "--json"]).out);
   assert.equal(decisionsLast24h, null, "unknown is not zero");
+});
+
+// --- fourth-pass findings -------------------------------------------------
+
+test("an escalation during a notification hook is not reported as enforcement", () => {
+  // model_call is a notification hook that returns nothing. A storm reaching
+  // endRun there is a policy position; no run has been ended by anyone yet.
+  // Reporting it as "ended a run" invents an enforcement event, and the
+  // stricter rung/time matching added earlier only made that claim look
+  // better-evidenced.
+  const st = join(dir, "escalated-state.json");
+  const tr = join(dir, "escalated-trail.jsonl");
+  const now = Date.now();
+  writeFileSync(
+    st,
+    JSON.stringify({
+      version: 1,
+      scopes: [{ key: "bot", day: { day: "2026-09-07", total: 0 }, dayBytes: { day: "2026-09-07", total: 5000 }, ladder: { rung: "endRun", lastTriggerAt: now, lastActionAt: now } }],
+    }),
+  );
+  writeFileSync(tr, `${JSON.stringify({ t: new Date(now).toISOString(), scope: "bot", rung: "endRun", trigger: "model_call_rate", observed: 40, limit: 2, reason: "storm", action: "escalated", v: 2 })}\n`);
+  const { out } = run(["status", "--state", st, "--trail", tr]);
+  assert.doesNotMatch(out, /<- ended a run/);
+  assert.match(out, /enforced at the next gate/);
+  assert.equal(JSON.parse(run(["status", "--state", st, "--trail", tr, "--json"]).out).scopes[0].actionVerified, false);
+});
+
+test("a pre-v2 record cannot prove enforcement", () => {
+  // Records written by <= 0.4.0 derived their action from the rung alone, so an
+  // "ended" among them may describe a notification-hook escalation that stopped
+  // nothing. They cannot settle the question either way.
+  const st = join(dir, "legacy-state.json");
+  const tr = join(dir, "legacy-trail.jsonl");
+  const now = Date.now();
+  writeFileSync(
+    st,
+    JSON.stringify({
+      version: 1,
+      scopes: [{ key: "bot", day: { day: "2026-09-07", total: 1 }, dayBytes: { day: "2026-09-07", total: 10 }, ladder: { rung: "endRun", lastTriggerAt: now, lastActionAt: now } }],
+    }),
+  );
+  writeFileSync(tr, `${JSON.stringify({ t: new Date(now).toISOString(), scope: "bot", rung: "endRun", trigger: "spend_day", observed: 3, limit: 2, reason: "old schema", action: "ended" })}\n`);
+  const { out } = run(["status", "--state", st, "--trail", tr]);
+  assert.match(out, /pre-v2 record/);
+  assert.doesNotMatch(out, /<- ended a run/);
 });

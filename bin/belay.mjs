@@ -150,6 +150,7 @@ function explainMissing(res, what, configKey, flag, envVar) {
   }
 }
 
+/** How an action reads in a report. `escalated` is deliberately not past-tense. */
 const RUNG_LABEL = {
   none: "ok",
   warn: "warned",
@@ -193,7 +194,23 @@ function corroboration(trail, scope) {
     if (Date.parse(r.t) < since) continue;
     best = r;
   }
-  return best?.action;
+  return best;
+}
+
+/** Actions that mean a gate actually refused something. */
+const ENFORCED = new Set(["blocked", "ended", "paused"]);
+
+/**
+ * Did a gate actually enforce, on the evidence available?
+ *
+ * Records written before schema v2 derived their action from the ladder rung
+ * alone, so an "ended" among them may describe a rung reached during a
+ * notification hook that stopped nothing. Those cannot settle the question and
+ * are reported as unverified rather than believed.
+ */
+function enforcementProven(record) {
+  if (!record || !ENFORCED.has(record.action)) return false;
+  return (record.v ?? 0) >= 2;
 }
 
 function status(opts) {
@@ -223,7 +240,7 @@ function status(opts) {
             spendUsd: s.day?.total ?? 0,
             requestBytes: s.dayBytes?.total ?? 0,
             ladderRung: s.ladder?.rung ?? "none",
-            actionVerified: corroboration(trail, s) !== undefined,
+            actionVerified: enforcementProven(corroboration(trail, s)),
           })),
           decisionsLast24h:
             trailRes.source === "ok" ? trail.filter((r) => Date.parse(r.t) >= dayAgo).length : null,
@@ -255,15 +272,19 @@ function status(opts) {
     for (const s of scopes) {
       const rung = s.ladder?.rung ?? "none";
       const label = RUNG_LABEL[rung] ?? rung;
-      const acted = corroboration(trail, s);
+      const rec = corroboration(trail, s);
       const flag =
         rung === "none"
           ? ""
-          : acted === undefined
+          : rec === undefined
             ? `  <- ladder at ${rung}; action unverified`
-            : acted === "logged"
+            : rec.action === "logged"
               ? `  <- would have ${label}`
-              : `  <- ${label}`;
+              : rec.action === "escalated"
+                ? `  <- ladder at ${rung}; enforced at the next gate`
+                : enforcementProven(rec)
+                  ? `  <- ${label}`
+                  : `  <- ladder at ${rung}; action unverified (pre-v2 record)`;
       const spend = s.day?.total ?? 0;
       const bytes = s.dayBytes?.total ?? 0;
       if (bytes > 0 && spend === 0) anyBlindSpend = true;

@@ -1007,3 +1007,58 @@ test("no sequence of junk hook payloads makes a handler throw", () => {
   revived.load(JSON.parse(JSON.stringify(belay.meter.toJSON())));
   assert.ok(revived.scopes().length > 0);
 });
+
+test("a model storm before any gate records escalation, not completed enforcement", () => {
+  // Reproduces the fourth-pass finding end-to-end: drive only the notification
+  // hook, which returns nothing and cannot stop anything, and confirm the trail
+  // does not claim a run was ended. Previously this wrote action "ended" while
+  // no gate had been called at all, and the CLI presented it as evidence.
+  const { config } = parseConfig({
+    mode: "enforce",
+    settleAfterRestartMs: 0,
+    limits: { modelCallsPerMinute: 2 },
+    ladder: { cooldownMs: 1 },
+  });
+  const written: RecorderRecord[] = [];
+  const recorder = { write: (r: RecorderRecord) => written.push(r) } as unknown as Recorder;
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now, { recorder });
+  const ctx = { agentId: "main", runId: "r1" };
+
+  for (let i = 0; i < 8; i += 1) {
+    now += 1000;
+    belay.modelCallStarted(ctx);
+  }
+
+  assert.ok(written.length > 0, "the storm must be recorded");
+  for (const r of written) {
+    assert.ok(
+      r.action === "logged" || r.action === "escalated",
+      `a notification hook cannot have ${r.action}: ${JSON.stringify(r)}`,
+    );
+  }
+  // The ladder is genuinely up there; only the claim about what was done changes.
+  assert.ok(written.some((r) => r.rung === "endRun" && r.action === "escalated"));
+});
+
+test("the run gate that actually refuses is what records an ended run", () => {
+  const { config } = parseConfig({
+    mode: "enforce",
+    settleAfterRestartMs: 0,
+    limits: { modelCallsPerMinute: 2 },
+    ladder: { cooldownMs: 1 },
+  });
+  const written: RecorderRecord[] = [];
+  const recorder = { write: (r: RecorderRecord) => written.push(r) } as unknown as Recorder;
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now, { recorder });
+  const ctx = { agentId: "main", runId: "r1" };
+
+  for (let i = 0; i < 8; i += 1) {
+    now += 1000;
+    belay.modelCallStarted(ctx);
+  }
+  now += 1000;
+  const decision = belay.beforeAgentRun({ agentId: "main", runId: "r2" });
+  assert.equal(decision.outcome, "block", "the storm must still be enforced at the run gate");
+});

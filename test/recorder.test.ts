@@ -15,15 +15,34 @@ function makeLogger() {
 
 const T0 = Date.parse("2026-09-02T17:00:00Z");
 
-const record = toRecord(T0, "main", "endRun", "spend_day", 2.1, 2, "daily spend $2.1 reached the $2 cap");
+const record = toRecord(T0, "main", "endRun", "spend_day", 2.1, 2, "daily spend $2.1 reached the $2 cap", "agent_run");
 
-test("toRecord maps each rung to what actually happened", () => {
+test("the action a record claims is what the writing hook could actually do", () => {
+  // Deriving the action from the rung alone claimed enforcement that had not
+  // happened. `model_call` is a notification hook that returns nothing, so a
+  // storm reaching endRun there recorded "ended" while no run had been ended
+  // by anyone -- and the CLI presented that as evidence of enforcement.
   const at = T0;
-  assert.equal(toRecord(at, "s", "warn", "spend_run", 1, 1, "r").action, "logged");
-  assert.equal(toRecord(at, "s", "blockTool", "spend_run", 1, 1, "r").action, "blocked");
-  assert.equal(toRecord(at, "s", "endRun", "spend_run", 1, 1, "r").action, "ended");
+
+  // The run gate refuses only the top rungs; blockTool passes through it.
+  assert.equal(toRecord(at, "s", "warn", "spend_run", 1, 1, "r", "agent_run").action, "logged");
+  assert.equal(toRecord(at, "s", "blockTool", "spend_run", 1, 1, "r", "agent_run").action, "logged");
+  assert.equal(toRecord(at, "s", "endRun", "spend_run", 1, 1, "r", "agent_run").action, "ended");
   // "pause" records as "ended": see the dedicated test below for why.
-  assert.equal(toRecord(at, "s", "pause", "spend_run", 1, 1, "r").action, "ended");
+  assert.equal(toRecord(at, "s", "pause", "spend_run", 1, 1, "r", "agent_run").action, "ended");
+
+  // The tool gate refuses anything above warn.
+  assert.equal(toRecord(at, "s", "blockTool", "tool_call_rate", 1, 1, "r", "tool_call").action, "blocked");
+  assert.equal(toRecord(at, "s", "warn", "tool_call_rate", 1, 1, "r", "tool_call").action, "logged");
+
+  // A model-call notification stops nothing. It can only escalate.
+  assert.equal(toRecord(at, "s", "endRun", "model_call_rate", 40, 2, "r", "model_call").action, "escalated");
+  assert.equal(toRecord(at, "s", "blockTool", "model_call_rate", 40, 2, "r", "model_call").action, "escalated");
+  assert.equal(toRecord(at, "s", "warn", "model_call_rate", 40, 2, "r", "model_call").action, "logged");
+});
+
+test("records carry a schema version so older, rung-derived actions can be distrusted", () => {
+  assert.equal(toRecord(T0, "s", "endRun", "spend_day", 3, 2, "r", "agent_run").v, 2);
 });
 
 test("recording is off unless a file is configured", () => {
@@ -112,7 +131,7 @@ test("a real trail round-trips through the file", () => {
   const file = join(tmp(), "trail.jsonl");
   const r = new Recorder({ file, maxBytes: 1_000_000 }, makeLogger());
   r.write(record);
-  r.write(toRecord(T0 + 1000, "gauntlet", "pause", "model_call_rate", 40, 30, "40 model calls in the last minute"));
+  r.write(toRecord(T0 + 1000, "gauntlet", "pause", "model_call_rate", 40, 30, "40 model calls in the last minute", "agent_run"));
 
   const trail = parseTrail(readFileSync(file, "utf8"));
   assert.equal(trail.length, 2);
@@ -147,5 +166,5 @@ test("reaching the pause rung records an ended run, not a completed pause", () =
   // made. A trail claiming "paused" for an attempt that failed is the same
   // false claim the alerts used to make -- and the trail is the evidence an
   // operator reaches for afterwards, so it has to be true.
-  assert.equal(toRecord(T0, "s", "pause", "spend_day", 3, 2, "r").action, "ended");
+  assert.equal(toRecord(T0, "s", "pause", "spend_day", 3, 2, "r", "agent_run").action, "ended");
 });

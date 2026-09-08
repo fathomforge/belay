@@ -32,8 +32,22 @@ export type Record = {
   limit: number;
   /** Plain-English reason, built from numbers only. */
   reason: string;
-  /** What Belay actually did about it. */
-  action: "logged" | "blocked" | "ended" | "paused";
+  /**
+   * What Belay actually did about it, at the hook that wrote this record.
+   *
+   * `escalated` is the important one: the ladder reached a blocking rung during
+   * a *notification* hook, which cannot stop anything. Enforcement follows at
+   * the next applicable gate. Recording that as "ended" would claim an
+   * enforcement event that had not happened.
+   */
+  action: "logged" | "escalated" | "blocked" | "ended" | "paused";
+  /**
+   * Record schema version. Absent on records written by <= 0.4.0, whose
+   * `action` was derived from the rung alone and so may claim enforcement that
+   * never occurred. Readers should treat an unversioned `blocked`/`ended` as
+   * unverified rather than as evidence.
+   */
+  v?: number;
 };
 
 export type RecorderConfig = {
@@ -115,6 +129,34 @@ export class Recorder {
 }
 
 /** Turn a decision into a record. Kept separate so it can be tested purely. */
+/**
+ * What the hook that is writing this record actually did.
+ *
+ * Deriving this from the rung alone was wrong, and wrong in the direction that
+ * matters: `model_call` is a notification hook that returns nothing, so a model
+ * storm reaching `endRun` there recorded `action: "ended"` while no run had
+ * been ended by anyone. The CLI then presented that as evidence of enforcement.
+ *
+ * So the surface decides, matching exactly what each gate does with a rung:
+ *   agent_run  refuses only endRun/pause; blockTool passes through
+ *   tool_call  refuses anything above warn
+ *   model_call refuses nothing -- it can only escalate
+ */
+function actionFor(surface: RecordSurface, rung: RungName): Record["action"] {
+  if (rung === "none" || rung === "warn") return "logged";
+  switch (surface) {
+    case "agent_run":
+      return rung === "endRun" || rung === "pause" ? "ended" : "logged";
+    case "tool_call":
+      return "blocked";
+    default:
+      return "escalated";
+  }
+}
+
+/** Which hook is writing the record. Mirrors the enforcer's `Surface`. */
+export type RecordSurface = "agent_run" | "tool_call" | "model_call";
+
 export function toRecord(
   at: number,
   scope: string,
@@ -123,13 +165,12 @@ export function toRecord(
   observed: number,
   limit: number,
   reason: string,
+  surface: RecordSurface,
 ): Record {
-  // The top rung records "ended", not "paused". Reaching it certainly ends the
-  // run; whether the account also stopped is not known until the gateway
-  // answers, and a trail that claims a pause which failed is the same lie the
-  // alerts used to tell. A successful pause is written as its own record.
-  const action: Record["action"] =
-    rung === "endRun" || rung === "pause" ? "ended" : rung === "blockTool" ? "blocked" : "logged";
+  // A blocking rung records "ended", never "paused": whether the account also
+  // stopped is not known until the gateway answers, and a trail that claims a
+  // pause which failed is the same lie the alerts used to tell. A successful
+  // pause is written as its own record.
   return {
     t: new Date(at).toISOString(),
     scope,
@@ -138,7 +179,8 @@ export function toRecord(
     observed,
     limit,
     reason,
-    action,
+    action: actionFor(surface, rung),
+    v: 2,
   };
 }
 

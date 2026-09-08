@@ -5,6 +5,42 @@ All notable changes to Belay are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-07
+
+A fourth review pass, and the most serious finding so far: the flight recorder — the evidence
+everything else is checked against — described policy escalation as completed enforcement.
+
+### Fixed
+
+- **A record no longer claims an action the writing hook could not perform.** `toRecord` derived
+  `action` from the ladder rung alone, so a model storm reaching `endRun` during `model_call_started`
+  wrote `action: "ended"` — while that hook returns nothing and no run had been ended by anyone. The
+  action is now derived from the surface, matching exactly what each gate does with a rung: the run
+  gate refuses only `endRun`/`pause`, the tool gate refuses anything above `warn`, and a model-call
+  notification refuses nothing.
+- **New action `escalated`**: the ladder reached a blocking rung during a notification hook.
+  Enforcement follows at the next applicable gate. `belay status` shows
+  `ladder at endRun; enforced at the next gate` rather than `ended a run`.
+- **Records carry `v: 2`.** Lines written by 0.4.0 and earlier derived `action` from the rung and so
+  may claim enforcement that never happened. The CLI treats an unversioned `blocked`/`ended` as
+  unverified instead of believing it, and `status --json` reports `actionVerified: false` for them.
+
+This one compounded: the stricter rung-and-timestamp matching added in 0.4.0 made the CLI *more*
+confident about a claim the engine had fabricated upstream. Tightening the reader could never have
+found it — only reproducing through the real engine and recorder did.
+
+Enforcement itself is unchanged: a model storm still blocks at the next run gate, and there is a
+test asserting both halves — that the notification records only escalation, and that the run gate
+still refuses.
+
+### Added
+
+- End-to-end tests driving the real engine and recorder: a model-only storm before any gate must
+  not record completed blocking, and the run gate must still refuse the following run.
+- Recorder tests pinning the surface-to-action mapping for all three surfaces, and CLI tests for
+  `escalated` and for pre-v2 records.
+- README section documenting what each `action` value claims.
+
 ## [0.4.0] - 2026-09-07
 
 A third review pass. The 0.3.0 enforcement fix held; these are three places where the *previous*

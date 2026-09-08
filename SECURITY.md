@@ -37,8 +37,8 @@ identifiers, and its own configuration block.
 **It writes** exactly two files, both only if you configure them, both mode `0600`:
 
 - `stateFile` — per-agent daily spend totals and ladder positions
-- `recorder.file` — one JSONL line per decision: scope, rung, rule, the number that broke it, and
-  a plain-English reason built from numbers
+- `recorder.file` — one JSONL line per decision: scope, rung, rule, the number that broke it, a
+  plain-English reason built from numbers, and what the writing hook actually did
 
 Neither has a field for message content. The recorder rebuilds each record field by field, so content
 cannot ride along inside a passed-through object. That is a meaningful reduction in accidental
