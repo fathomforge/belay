@@ -37,8 +37,22 @@ const BYTES = (n: number): string => {
  * Which triggers each surface is allowed to act on.
  *
  * `before_agent_run` is the only gate that can stop work before money is spent,
- * so it owns the budget checks. Rate limits belong on the tool gate, where
- * blocking one call still lets the agent recover and explain itself.
+ * so it owns the budget checks. Tool-rate triggers belong on the tool gate,
+ * where blocking one call still lets the agent recover and explain itself.
+ *
+ * `model_call_rate` and `request_bytes_minute` are on the run gate as well, and
+ * that is deliberate. The incident this project was built around is a *model*
+ * storm: an agent that loops without ever calling a tool, so no tool gate ever
+ * fires. With those triggers on the tool gate only, such a loop met no gate at
+ * all -- the ladder climbed to endRun and the next run was still allowed
+ * through, because the run gate had no rate trigger to evaluate. Spend and byte
+ * budgets did not cover the gap either: spend needs a provider that reports
+ * usage, and the byte limits are unset by default.
+ *
+ * A minute-window trigger on the run gate means a run can be refused while a
+ * storm is still inside the window, and allowed again once it ages out. That is
+ * the intended behaviour: it stops work "while the breach persists" rather than
+ * permanently.
  */
 const SURFACE_TRIGGERS: Record<Surface, ReadonlySet<Trigger>> = {
   agent_run: new Set<Trigger>([
@@ -46,7 +60,9 @@ const SURFACE_TRIGGERS: Record<Surface, ReadonlySet<Trigger>> = {
     "spend_hour",
     "spend_day",
     "request_bytes_run",
+    "request_bytes_minute",
     "request_bytes_day",
+    "model_call_rate",
   ]),
   tool_call: new Set<Trigger>([
     "spend_run",

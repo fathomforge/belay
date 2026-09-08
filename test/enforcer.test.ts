@@ -60,8 +60,14 @@ test("each surface only acts on what it can actually control", () => {
   const limits = { modelCallsPerMinute: 10, identicalToolCalls: 5, spendPerRunUsd: 1 };
   const s = snap({ modelCallsPerMinute: 50, maxIdenticalCalls: 50, runUsd: 5 });
 
-  // A run gate cannot un-repeat a tool call, and a tool gate cannot end a run.
-  assert.deepEqual(evaluate(s, limits, rungs, "agent_run").map((b) => b.trigger), ["spend_run"]);
+  // A run gate cannot un-repeat a tool call: `identical_tool_call` stays off it.
+  // It *can* refuse the next run of an agent in a model storm, though, so
+  // `model_call_rate` belongs there -- without it a loop that never touches a
+  // tool met no gate at all.
+  assert.deepEqual(evaluate(s, limits, rungs, "agent_run").map((b) => b.trigger), [
+    "spend_run",
+    "model_call_rate",
+  ]);
   assert.deepEqual(evaluate(s, limits, rungs, "model_call").map((b) => b.trigger), [
     "model_call_rate",
   ]);
@@ -99,4 +105,55 @@ test("a spend cap with unpriced calls is reported as blind", () => {
   // No spend cap configured: unpriced calls are not a problem worth alarming about.
   assert.equal(spendCapsAreBlind(snap({ unpricedCalls: 3 }), {}), false);
   assert.equal(spendCapsAreBlind(snap({ unpricedCalls: 0 }), { spendPerDayUsd: 2 }), false);
+});
+
+// The motivating incident is a *model* storm: an agent that loops without ever
+// calling a tool. With model_call_rate on the tool gate only, no gate ever
+// fired for it -- the ladder climbed to endRun while the run gate, having no
+// rate trigger to evaluate, kept letting the next run through. Spend and byte
+// budgets did not cover the gap: spend needs a provider that reports usage, and
+// the byte limits are unset by default.
+test("a model-call storm is actionable at the run gate, not only the tool gate", () => {
+  const limits = { modelCallsPerMinute: 10 };
+  const storm = snap({ modelCallsPerMinute: 40 });
+
+  const atRun = evaluate(storm, limits, rungs, "agent_run");
+  assert.equal(atRun.length, 1, "the run gate must see the storm");
+  assert.equal(atRun[0]?.trigger, "model_call_rate");
+
+  // Still enforced where it always was.
+  assert.equal(evaluate(storm, limits, rungs, "model_call")[0]?.trigger, "model_call_rate");
+});
+
+test("a model-only loop with no tool calls and no usage reporting still meets a gate", () => {
+  // The provider reports no tokens, so every spend figure is 0 and no spend cap
+  // can fire. No tool is ever called. Only the rate limit stands between this
+  // agent and an unbounded loop.
+  const limits = { spendPerDayUsd: 5, modelCallsPerMinute: 10 };
+  const breaches = evaluate(
+    snap({ modelCallsPerMinute: 60, dayUsd: 0, runUsd: 0, toolCallsPerMinute: 0 }),
+    limits,
+    rungs,
+    "agent_run",
+  );
+  assert.equal(breaches.length, 1);
+  assert.equal(breaches[0]?.trigger, "model_call_rate");
+});
+
+test("a per-minute byte breach is actionable at the run gate", () => {
+  const breaches = evaluate(
+    snap({ bytesPerMinute: 5_000_000 }),
+    { requestBytesPerMinute: 1_000_000 },
+    rungs,
+    "agent_run",
+  );
+  assert.equal(breaches[0]?.trigger, "request_bytes_minute");
+});
+
+test("run-gate rate enforcement clears once the window ages out", () => {
+  // A minute window must not become a permanent ban: the same agent, once the
+  // storm has aged out of the window, passes the run gate again.
+  const limits = { modelCallsPerMinute: 10 };
+  assert.equal(evaluate(snap({ modelCallsPerMinute: 40 }), limits, rungs, "agent_run").length, 1);
+  assert.deepEqual(evaluate(snap({ modelCallsPerMinute: 0 }), limits, rungs, "agent_run"), []);
 });
