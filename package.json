@@ -55,7 +55,7 @@
     }
   },
   "bin": {
-    "belay": "./bin/belay.mjs"
+    "belay": "bin/belay.mjs"
   },
   "publishConfig": {
     "access": "public",
