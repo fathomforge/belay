@@ -85,12 +85,23 @@ function readTrail(file) {
     if (!trimmed) continue;
     try {
       const parsed = JSON.parse(trimmed);
-      if (parsed && typeof parsed.t === "string") records.push(parsed);
-      else skipped += 1;
+      // A record whose timestamp cannot be parsed would silently vanish from
+      // every time-windowed view, which looks identical to "nothing happened".
+      // Count it as damage rather than dropping it quietly.
+      if (parsed && typeof parsed.t === "string" && Number.isFinite(Date.parse(parsed.t))) {
+        records.push(parsed);
+      } else {
+        skipped += 1;
+      }
     } catch {
       // A file killed mid-write ends in a partial line. Skip it, keep the rest.
       skipped += 1;
     }
+  }
+  // Lines were present and none survived: this is a damaged trail, not a quiet
+  // one, and reporting "no incidents" from it would be a guess dressed as a fact.
+  if (records.length === 0 && skipped > 0) {
+    return { source: "unreadable", path: file, records, skipped, error: `${skipped} unreadable record(s), none usable` };
   }
   return { source: "ok", path: file, records, skipped };
 }
@@ -151,6 +162,14 @@ function money(n) {
   return `$${(Math.round(n * 10000) / 10000).toFixed(4).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 
+/** Matches the enforcer's formatting, so a report reads like the alert did. */
+function BYTES(n) {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)} GB`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} MB`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)} kB`;
+  return `${Math.round(n)} B`;
+}
+
 function status(opts) {
   const stateRes = readState(opts.state);
   const trailRes = readTrail(opts.trail);
@@ -161,17 +180,20 @@ function status(opts) {
   if (stateRes.source !== "ok") {
     lines.push(...explainMissing(stateRes, "state file", "plugins.entries.belay.config.stateFile", "--state", "BELAY_STATE_FILE"));
   } else {
-    lines.push("  Spend recorded today (per agent):");
+    lines.push("  Recorded today (per agent):");
+    lines.push(`    ${"agent".padEnd(20)} ${"spend".padStart(10)} ${"request bytes".padStart(14)}`);
     const scopes = stateRes.state.scopes ?? [];
     if (scopes.length === 0) lines.push("    (nothing yet)");
 
     // An agent in observe mode still climbs the ladder internally, so that its
     // reports can say what *would* have happened. Labelling that as "ended a
-    // run" would claim something that never occurred, so check what was
-    // actually recorded before describing it.
+    // run" would claim something that never occurred. And without a trail there
+    // is no evidence either way -- the stored rung is a policy position, not a
+    // record that anything was done -- so say so rather than assuming.
     const lastAction = new Map();
     for (const r of trail) lastAction.set(r.scope, r.action);
 
+    let anyBlindSpend = false;
     for (const s of scopes) {
       const rung = s.ladder?.rung ?? "none";
       const acted = lastAction.get(s.key);
@@ -179,10 +201,27 @@ function status(opts) {
       const flag =
         rung === "none"
           ? ""
-          : acted === "logged"
-            ? `  <- would have ${label}`
-            : `  <- ${label}`;
-      lines.push(`    ${s.key.padEnd(20)} ${money(s.day?.total ?? 0).padStart(10)}  (${s.day?.day ?? "?"})${flag}`);
+          : acted === undefined
+            ? `  <- ladder at ${rung}; action unverified`
+            : acted === "logged"
+              ? `  <- would have ${label}`
+              : `  <- ${label}`;
+      const spend = s.day?.total ?? 0;
+      const bytes = s.dayBytes?.total ?? 0;
+      if (bytes > 0 && spend === 0) anyBlindSpend = true;
+      lines.push(
+        `    ${s.key.padEnd(20)} ${money(spend).padStart(10)} ${BYTES(bytes).padStart(14)}  (${s.day?.day ?? "?"})${flag}`,
+      );
+    }
+
+    // $0 next to real traffic is the signature of a provider that reports no
+    // token usage. Left unexplained it reads as "nothing was spent", which is
+    // the silent-inert-spend-cap trap this project exists to warn about.
+    if (anyBlindSpend) {
+      lines.push("");
+      lines.push("  Some agents show $0 spend against non-zero bytes. That usually means the");
+      lines.push("  provider reported no token usage, so spend caps cannot fire for them --");
+      lines.push("  use requestBytesPer* limits there instead.");
     }
   }
 
@@ -210,8 +249,9 @@ function status(opts) {
       // never registered its hooks also records nothing, so point at the check
       // that distinguishes the two rather than declaring victory outright.
       lines.push(`    Nothing tripped, reading ${trailRes.path}.`);
-      lines.push("    An empty trail means no decision was recorded. To confirm Belay is");
-      lines.push('    actually metering, check the gateway log for "[belay] active".');
+      lines.push("    An empty trail means no decision was recorded, which is not by itself");
+      lines.push("    proof of metering -- the request-bytes column above is. If it is 0 for");
+      lines.push("    every agent after real traffic, Belay is loaded but seeing nothing.");
     }
   }
 
@@ -305,12 +345,17 @@ function incidents(opts) {
   if (records.length === 0) {
     stdout.write(
       `No incidents recorded in the last ${opts.hours}h, reading ${res.path}.\n` +
-        "An empty trail means no decision was recorded. To confirm Belay is\n" +
-        'actually metering, check the gateway log for "[belay] active".\n',
+        "An empty trail means no decision was recorded, which is not by itself proof\n" +
+        "of metering. Run `belay status` and check the request-bytes column.\n",
     );
     return;
   }
   const lines = [`Belay incidents, last ${opts.hours}h (${records.length})`, ""];
+  if (res.skipped > 0) {
+    lines.push(`  Warning: ${res.skipped} unreadable record(s) in ${res.path} were skipped.`);
+    lines.push("  The list below may be incomplete.");
+    lines.push("");
+  }
   for (const r of records) {
     lines.push(`${r.t}  ${(RUNG_LABEL[r.rung] ?? r.rung).padEnd(14)} ${r.scope}`);
     lines.push(`    ${r.reason}`);
@@ -322,6 +367,13 @@ function incidents(opts) {
 const opts = parseArgs(argv.slice(2));
 opts.state = opts.state ?? process.env.BELAY_STATE_FILE;
 opts.trail = opts.trail ?? process.env.BELAY_TRAIL_FILE;
+
+if (!Number.isFinite(opts.hours) || opts.hours <= 0) {
+  // Number("garbage") is NaN, and every `>= NaN` comparison is false, so an
+  // unvalidated value silently discarded real incidents and reported success.
+  stdout.write("belay: --hours must be a positive number.\n");
+  exit(1);
+}
 
 const command = opts._[0];
 if (opts.help || !command) {

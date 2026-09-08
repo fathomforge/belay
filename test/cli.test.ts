@@ -50,7 +50,7 @@ writeFileSync(
   state,
   JSON.stringify({
     version: 1,
-    scopes: [{ key: "bot", day: { day: "2026-09-07", total: 1.25 }, ladder: { rung: "warn", lastTriggerAt: 1, lastActionAt: 1 } }],
+    scopes: [{ key: "bot", day: { day: "2026-09-07", total: 1.25 }, dayBytes: { day: "2026-09-07", total: 246075 }, ladder: { rung: "warn", lastTriggerAt: 1, lastActionAt: 1 } }],
   }),
 );
 
@@ -90,8 +90,11 @@ test("a trail that was read and is empty is honestly reported as empty", () => {
   assert.equal(code, 0, "a successful read is not an error");
   assert.match(out, /No incidents recorded/);
   assert.match(out, /empty\.jsonl/, "says which file it read");
-  // Reading an empty trail proves nothing was recorded, not that metering works.
-  assert.match(out, /\[belay\] active/);
+  // Reading an empty trail proves nothing was recorded, not that metering works,
+  // and it must point at the counter that does settle it rather than at the
+  // startup log line, which only proves the plugin loaded.
+  assert.match(out, /not by itself proof/);
+  assert.match(out, /request-bytes column/);
 });
 
 test("a trail with a decision reports it and exits 0", () => {
@@ -140,4 +143,85 @@ test("--help exits 0 and documents the exit codes", () => {
   assert.equal(code, 0);
   assert.match(out, /Exit codes:/);
   assert.match(out, /BELAY_TRAIL_FILE/);
+});
+
+// --- second-pass findings -------------------------------------------------
+
+test("status shows the request-byte counter the metering check depends on", () => {
+  // The documented acceptance procedure says to watch a byte total. Printing
+  // only dollars made that procedure impossible to follow -- and for a provider
+  // that reports no token usage, the dollar column is always $0, so the check
+  // would have "failed" on a perfectly healthy install.
+  const { code, out } = run(["status", "--state", state, "--trail", trail]);
+  assert.equal(code, 0);
+  assert.match(out, /246 kB/);
+});
+
+test("$0 spend against real bytes is explained, not left to read as free", () => {
+  const blind = join(dir, "blind.json");
+  writeFileSync(
+    blind,
+    JSON.stringify({
+      version: 1,
+      scopes: [{ key: "bot", day: { day: "2026-09-07", total: 0 }, dayBytes: { day: "2026-09-07", total: 500000 }, ladder: { rung: "none", lastTriggerAt: 0, lastActionAt: 0 } }],
+    }),
+  );
+  const { out } = run(["status", "--state", blind, "--trail", trail]);
+  assert.match(out, /reported no token usage/);
+});
+
+test("a wholly corrupt trail is unreadable, not empty", () => {
+  const corrupt = join(dir, "corrupt.jsonl");
+  writeFileSync(corrupt, "{not json\n{\"also\": \"bad\"}\n");
+  const { code, out } = run(["incidents", "--trail", corrupt, "--json"]);
+  assert.equal(code, 2, "damaged evidence is not a clean bill of health");
+  assert.equal(JSON.parse(out).source, "unreadable");
+});
+
+test("a record with an unparseable timestamp counts as damage, not absence", () => {
+  const bad = join(dir, "badtime.jsonl");
+  writeFileSync(bad, `${JSON.stringify({ t: "not-a-date", scope: "bot", action: "logged" })}\n`);
+  const { code } = run(["incidents", "--trail", bad, "--json"]);
+  assert.equal(code, 2);
+});
+
+test("surviving records are reported, with the damaged ones disclosed", () => {
+  const mixed = join(dir, "mixed.jsonl");
+  writeFileSync(
+    mixed,
+    `${JSON.stringify({ t: new Date().toISOString(), scope: "bot", rung: "warn", trigger: "model_call_rate", observed: 40, limit: 20, reason: "storm", action: "logged" })}\n{truncated`,
+  );
+  const { code, out } = run(["incidents", "--trail", mixed]);
+  assert.equal(code, 0, "one good record is still evidence");
+  assert.match(out, /storm/);
+  assert.match(out, /unreadable record/, "but the damage must be disclosed");
+});
+
+test("a stored rung is not reported as an action without evidence", () => {
+  // Observe mode advances the ladder without acting, so a rung alone proves
+  // nothing. With no trail to corroborate it, saying "ended a run" invents an
+  // enforcement event that may never have happened.
+  const ended = join(dir, "ended.json");
+  writeFileSync(
+    ended,
+    JSON.stringify({
+      version: 1,
+      scopes: [{ key: "bot", day: { day: "2026-09-07", total: 1 }, dayBytes: { day: "2026-09-07", total: 10 }, ladder: { rung: "endRun", lastTriggerAt: 1, lastActionAt: 1 } }],
+    }),
+  );
+  const { out } = run(["status", "--state", ended]);
+  assert.match(out, /action unverified/);
+  assert.doesNotMatch(out, /<- ended a run/);
+});
+
+test("a malformed --hours fails loudly instead of hiding real incidents", () => {
+  // Number("garbage") is NaN and every `>= NaN` is false, so the filter used to
+  // discard every incident and still report success.
+  const { code, out } = run(["incidents", "--trail", trail, "--hours", "garbage", "--json"]);
+  assert.equal(code, 1);
+  assert.match(out, /--hours must be a positive number/);
+});
+
+test("a negative --hours is rejected too", () => {
+  assert.equal(run(["incidents", "--trail", trail, "--hours", "-5"]).code, 1);
 });
