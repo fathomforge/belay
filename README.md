@@ -6,6 +6,8 @@ no network calls except the alerts you configure yourself.
 
 *Not affiliated with the OpenClaw Foundation.*
 
+The production incidents behind this plugin are written up at [fathomforge.dev](https://fathomforge.dev/writing/).
+
 ```
 warn  →  block a tool call  →  end the run  →  pause the account
                                                └─ not available on OpenClaw 2026.8.2; the
