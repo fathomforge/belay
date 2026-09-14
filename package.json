@@ -1,6 +1,6 @@
 {
   "name": "@fathomforge/belay",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Belay: local, zero-dependency spend caps, rate limits and a graceful pause ladder for autonomous agents.",
   "license": "MIT",
   "author": "fathomforge <carlos@fathomforge.dev>",
@@ -53,6 +53,9 @@
     "compat": {
       "pluginApi": ">=2026.8.2",
       "minGatewayVersion": "2026.8.2"
+    },
+    "build": {
+      "openclawVersion": "2026.8.2"
     }
   },
   "bin": {

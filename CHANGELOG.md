@@ -5,6 +5,14 @@ All notable changes to Belay are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-09-13
+
+Packaging only; no behaviour change.
+
+- **Added `openclaw.build.openclawVersion`** to `package.json`, set to `2026.8.2` — the gateway
+  version this release was built and dogfooded against. ClawHub requires the field to publish a
+  code plugin, and rejects the package without it.
+
 ## [0.7.0] - 2026-09-07
 
 Final pre-launch review. One blocker, and it is the same defect a third time: after correcting the
