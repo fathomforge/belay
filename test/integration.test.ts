@@ -114,7 +114,7 @@ test("3. the schema version survives to disk and the CLI trusts it", () => {
   belay.beforeAgentRun({ agentId: "main", runId: "r2" });
 
   const raw = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  for (const r of raw) assert.equal(r.v, 2, "every written record carries the version");
+  for (const r of raw) assert.equal(r.v, 3, "every written record carries the version");
 
   const { out } = cli(["incidents", "--trail", file, "--hours", "9999"]);
   assert.match(out, /ended a run/, "a real refusal reads as one");
@@ -275,4 +275,121 @@ test("8. observe mode never announces enforcement", async () => {
   for (const text of sent) {
     assert.doesNotMatch(text, /blocked a tool call|ended a run|paused an account/, text);
   }
+});
+
+/**
+ * 9. The single-call run.
+ *
+ * Request bytes are only known when a call *ends*, and the per-run counter dies
+ * with the run. Until 0.8.0 the only assessment happened at
+ * `model_call_started` -- when the run's byte total was still zero -- and the
+ * `model_call` surface did not even permit the `request_bytes_run` trigger. So
+ * a run consisting of one enormous request was never measured against
+ * `requestBytesPerRun` at all: the cap fired only on the second and later calls
+ * of a multi-call run.
+ *
+ * That is the failover-context shape this project exists to catch, and it was
+ * invisible to every existing test because they all drive multi-call runs.
+ * Found by driving a real agent on a production gateway, where five turns at
+ * 125 kB each against a 1 kB cap produced no breach whatsoever.
+ */
+test("9. one oversized request in a single-call run still breaches the per-run cap", () => {
+  const dir = mkdtempSync(join(tmpdir(), "belay-int-"));
+  const file = join(dir, "trail.jsonl");
+  const { config } = parseConfig({
+    mode: "enforce",
+    settleAfterRestartMs: 0,
+    limits: { requestBytesPerRun: 1_000_000 },
+    ladder: { cooldownMs: 1 },
+  });
+  const recorder = new Recorder({ file, maxBytes: 1_000_000 }, makeLogger());
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now, { recorder });
+  const ctx = { agentId: "main", runId: "r1" };
+
+  // Exactly one model call, nine times the per-run cap.
+  belay.modelCallStarted(ctx);
+  now += 1000;
+  belay.modelCallEnded(ctx, { runId: "r1", requestPayloadBytes: 9_000_000 });
+
+  const written = parseTrail(readFileSync(file, "utf8"));
+  const byRun = written.filter((r) => r.trigger === "request_bytes_run");
+  assert.ok(byRun.length > 0, "a single oversized call must breach requestBytesPerRun");
+
+  // A notification hook refuses nothing, so the record must claim escalation
+  // rather than enforcement -- the 0.5.0 rule still holds on this new path.
+  assert.equal(byRun[0]?.action, "escalated");
+  assert.equal(byRun[0]?.mode, "enforce");
+
+  const { out } = cli(["incidents", "--trail", file, "--hours", "9999"]);
+  assert.match(out, /escalated to endRun/);
+  assert.doesNotMatch(out, /would have/, "enforce mode is not hypothetical");
+
+  // But detection is all a per-run cap can give here, and saying otherwise
+  // would be the overclaim this project keeps fixing. `assess` acts on a
+  // breach that is *currently standing*; once the run ends its byte counter is
+  // gone, so the next run gates on a clean slate and passes. The ladder's rung
+  // is never consulted, because no breach is found to consult it about.
+  now += 1000;
+  assert.equal(
+    belay.beforeAgentRun({ agentId: "main", runId: "r2" }).outcome,
+    "pass",
+    "a per-run cap cannot contain the *next* run: its counter died with the run",
+  );
+});
+
+/**
+ * Which is why containment across runs needs a cross-run limit. Same single
+ * oversized call, but with a daily byte cap in play: the breach is still
+ * standing when the next run asks, so the run gate refuses it.
+ */
+test("9b. a cross-run byte cap turns that detection into containment", () => {
+  const dir = mkdtempSync(join(tmpdir(), "belay-int-"));
+  const file = join(dir, "trail.jsonl");
+  const { config } = parseConfig({
+    mode: "enforce",
+    settleAfterRestartMs: 0,
+    limits: { requestBytesPerRun: 1_000_000, requestBytesPerDay: 2_000_000 },
+    ladder: { cooldownMs: 1 },
+  });
+  const recorder = new Recorder({ file, maxBytes: 1_000_000 }, makeLogger());
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now, { recorder });
+
+  belay.modelCallEnded({ agentId: "main", runId: "r1" }, { runId: "r1", requestPayloadBytes: 9_000_000 });
+
+  now += 1000;
+  assert.equal(
+    belay.beforeAgentRun({ agentId: "main", runId: "r2" }).outcome,
+    "block",
+    "the daily total still stands, so the next run is refused",
+  );
+});
+
+/**
+ * The bytes must be assessed even when estimation is off: byte limits are
+ * measured exactly and have never depended on it. An early `return` for the
+ * estimation branch sat directly below the byte recording, so it would be easy
+ * to reintroduce this by moving the assessment one line down.
+ */
+test("10. the per-run byte cap does not depend on estimation being enabled", () => {
+  const dir = mkdtempSync(join(tmpdir(), "belay-int-"));
+  const file = join(dir, "trail.jsonl");
+  const { config } = parseConfig({
+    mode: "enforce",
+    settleAfterRestartMs: 0,
+    estimation: { enabled: false },
+    limits: { requestBytesPerRun: 1000 },
+    ladder: { cooldownMs: 1 },
+  });
+  const recorder = new Recorder({ file, maxBytes: 1_000_000 }, makeLogger());
+  let now = T0;
+  const belay = createBelay(config, makeLogger(), () => now, { recorder });
+  belay.modelCallEnded({ agentId: "main", runId: "r1" }, { runId: "r1", requestPayloadBytes: 50_000 });
+
+  const written = parseTrail(readFileSync(file, "utf8"));
+  assert.ok(
+    written.some((r) => r.trigger === "request_bytes_run"),
+    "estimation is irrelevant to an exactly-measured byte limit",
+  );
 });

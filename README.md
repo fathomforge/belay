@@ -285,8 +285,18 @@ matters: a model storm reaching `endRun` during a model-call notification used t
 while no run had been ended by anyone. `belay status` will not describe a run as ended unless a
 record from the gate that ended it says so.
 
-Records carry `v: 2`. Lines written by 0.4.0 and earlier have no `v`, and their `blocked`/`ended`
+Each line also carries `mode` (`enforce` or `observe`) and, inside the startup settling window,
+`settling: true`. Those exist because `logged` covers two different facts: observe mode, where
+nothing *would* have happened, and enforce mode at the `warn` rung, where Belay really did warn and
+really did send the alert — warning blocks nothing by design. Until 0.8.0 the only thing separating
+them was a suffix inside the free-text reason, so `belay incidents` reported a live guardrail's
+warning as "would have warned". It now reports `warned` for enforce and `would have warned` for
+observe.
+
+Records carry `v: 3`. Lines written by 0.4.0 and earlier have no `v`, and their `blocked`/`ended`
 were derived from the rung, so the CLI reports those as **unverified** rather than trusting them.
+Records at `v: 2` have no `mode`, but a `logged` record is still decidable from its reason suffix,
+because only the escalation path ever writes one.
 
 ## Configuration
 
@@ -470,6 +480,14 @@ bloat, an agent hammering a model) and they are measured rather than inferred:
 A rough anchor for choosing numbers: on the gateway this was developed against, an ordinary
 conversational turn sent a few hundred kB, and the runaway incidents in the incident library would
 have pushed tens of MB within a minute.
+
+> [!IMPORTANT]
+> **Always pair `requestBytesPerRun` with `requestBytesPerMinute` or `requestBytesPerDay`.**
+> A per-run counter dies with its run, so it can detect an oversized run and alert you, but it
+> cannot refuse the *next* one: by the time the next run reaches the gate, the breach it would be
+> refused for no longer exists. Enforcement acts on a breach that is still standing, which for a
+> sequence of oversized runs means a cross-run limit. The per-run cap is your detector; the
+> per-minute and per-day caps are what actually contain the spend.
 
 ### When your provider reports no token usage
 

@@ -75,7 +75,21 @@ const SURFACE_TRIGGERS: Record<Surface, ReadonlySet<Trigger>> = {
     "request_bytes_minute",
     "request_bytes_day",
   ]),
-  model_call: new Set<Trigger>(["model_call_rate", "request_bytes_minute"]),
+  // `model_call` refuses nothing -- it can only escalate the ladder, so a
+  // blocking rung reached here is enforced at the next tool call or run gate.
+  // That is exactly why the byte triggers belong on it. Request bytes are only
+  // known once a call *ends*, and the per-run counter resets with the run, so
+  // while these were absent here a run consisting of one enormous request was
+  // never measured against `requestBytesPerRun` at all: the sole assessment
+  // happened at `model_call_started`, when the run's byte count was still zero.
+  // A single 10 MB request sailed past a 1 MB cap, which is the shape of the
+  // failover-context incident this project exists to catch.
+  model_call: new Set<Trigger>([
+    "model_call_rate",
+    "request_bytes_run",
+    "request_bytes_minute",
+    "request_bytes_day",
+  ]),
 };
 
 /**

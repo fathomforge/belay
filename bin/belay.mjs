@@ -211,13 +211,40 @@ function corroboration(trail, scope) {
  * make: an `escalated` record from a model-call notification printed
  * "ended a run" although no gate had been called.
  */
+/**
+ * How a `logged` record reads.
+ *
+ * `logged` means no gate refused anything, but there are two very different
+ * reasons for that: observe mode, where nothing *would* have happened, and
+ * enforce mode at the `warn` rung, where Belay really did warn and really did
+ * send the alert -- warning blocks nothing by design. Printing "would have
+ * warned" for both understates a live guardrail as a hypothetical one, which is
+ * the same family of error as the enforcement overclaims fixed in 0.5.0-0.7.0,
+ * pointing the other way.
+ *
+ * v3 records say so in a structured field. Older ones are still decidable: a
+ * `logged` record is only ever written by the escalation path, which appends
+ * "(observe mode: ...)" or "(settling after restart: ...)" to the reason in
+ * exactly those two cases -- the outcome path, which writes no suffix, only
+ * runs when a gate actually refused something and so never writes `logged`.
+ */
+function describeLogged(r) {
+  const label = RUNG_LABEL[r.rung] ?? r.rung;
+  const reason = typeof r.reason === "string" ? r.reason : "";
+  const settling = r.settling ?? / \(settling after restart:/.test(reason);
+  if (settling) return `would have ${label} (settling after restart)`;
+  const observing = r.mode !== undefined
+    ? r.mode === "observe"
+    : / \(observe mode:/.test(reason);
+  return observing ? `would have ${label}` : label;
+}
+
 function describeAction(r) {
   switch (r.action) {
     case "escalated":
       return `escalated to ${r.rung}`;
     case "logged":
-      // Hypothetical, so the rung is the right thing to name.
-      return `would have ${RUNG_LABEL[r.rung] ?? r.rung}`;
+      return describeLogged(r);
     case "blocked":
     case "ended":
     case "paused": {
@@ -313,7 +340,7 @@ function status(opts) {
           : rec === undefined
             ? `  <- ladder at ${rung}; action unverified`
             : rec.action === "logged"
-              ? `  <- would have ${label}`
+              ? `  <- ${describeLogged(rec)}`
               : rec.action === "escalated"
                 ? `  <- ladder at ${rung}; enforced at the next gate`
                 : enforcementProven(rec)

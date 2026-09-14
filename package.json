@@ -1,6 +1,6 @@
 {
   "name": "@fathomforge/belay",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Belay: local, zero-dependency spend caps, rate limits and a graceful pause ladder for autonomous agents.",
   "license": "MIT",
   "author": "fathomforge <carlos@fathomforge.dev>",

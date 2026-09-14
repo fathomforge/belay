@@ -15,7 +15,7 @@ function makeLogger() {
 
 const T0 = Date.parse("2026-09-02T17:00:00Z");
 
-const record = toRecord(T0, "main", "endRun", "spend_day", 2.1, 2, "daily spend $2.1 reached the $2 cap", "agent_run");
+const record = toRecord(T0, "main", "endRun", "spend_day", 2.1, 2, "daily spend $2.1 reached the $2 cap", "agent_run", "enforce");
 
 test("the action a record claims is what the writing hook could actually do", () => {
   // Deriving the action from the rung alone claimed enforcement that had not
@@ -25,24 +25,24 @@ test("the action a record claims is what the writing hook could actually do", ()
   const at = T0;
 
   // The run gate refuses only the top rungs; blockTool passes through it.
-  assert.equal(toRecord(at, "s", "warn", "spend_run", 1, 1, "r", "agent_run").action, "logged");
-  assert.equal(toRecord(at, "s", "blockTool", "spend_run", 1, 1, "r", "agent_run").action, "logged");
-  assert.equal(toRecord(at, "s", "endRun", "spend_run", 1, 1, "r", "agent_run").action, "ended");
+  assert.equal(toRecord(at, "s", "warn", "spend_run", 1, 1, "r", "agent_run", "enforce").action, "logged");
+  assert.equal(toRecord(at, "s", "blockTool", "spend_run", 1, 1, "r", "agent_run", "enforce").action, "logged");
+  assert.equal(toRecord(at, "s", "endRun", "spend_run", 1, 1, "r", "agent_run", "enforce").action, "ended");
   // "pause" records as "ended": see the dedicated test below for why.
-  assert.equal(toRecord(at, "s", "pause", "spend_run", 1, 1, "r", "agent_run").action, "ended");
+  assert.equal(toRecord(at, "s", "pause", "spend_run", 1, 1, "r", "agent_run", "enforce").action, "ended");
 
   // The tool gate refuses anything above warn.
-  assert.equal(toRecord(at, "s", "blockTool", "tool_call_rate", 1, 1, "r", "tool_call").action, "blocked");
-  assert.equal(toRecord(at, "s", "warn", "tool_call_rate", 1, 1, "r", "tool_call").action, "logged");
+  assert.equal(toRecord(at, "s", "blockTool", "tool_call_rate", 1, 1, "r", "tool_call", "enforce").action, "blocked");
+  assert.equal(toRecord(at, "s", "warn", "tool_call_rate", 1, 1, "r", "tool_call", "enforce").action, "logged");
 
   // A model-call notification stops nothing. It can only escalate.
-  assert.equal(toRecord(at, "s", "endRun", "model_call_rate", 40, 2, "r", "model_call").action, "escalated");
-  assert.equal(toRecord(at, "s", "blockTool", "model_call_rate", 40, 2, "r", "model_call").action, "escalated");
-  assert.equal(toRecord(at, "s", "warn", "model_call_rate", 40, 2, "r", "model_call").action, "logged");
+  assert.equal(toRecord(at, "s", "endRun", "model_call_rate", 40, 2, "r", "model_call", "enforce").action, "escalated");
+  assert.equal(toRecord(at, "s", "blockTool", "model_call_rate", 40, 2, "r", "model_call", "enforce").action, "escalated");
+  assert.equal(toRecord(at, "s", "warn", "model_call_rate", 40, 2, "r", "model_call", "enforce").action, "logged");
 });
 
 test("records carry a schema version so older, rung-derived actions can be distrusted", () => {
-  assert.equal(toRecord(T0, "s", "endRun", "spend_day", 3, 2, "r", "agent_run").v, 2);
+  assert.equal(toRecord(T0, "s", "endRun", "spend_day", 3, 2, "r", "agent_run", "enforce").v, 3);
 });
 
 test("recording is off unless a file is configured", () => {
@@ -79,6 +79,7 @@ test("only known fields reach disk, whatever the caller passes", () => {
   assert.deepEqual(Object.keys(JSON.parse(written.trim())).sort(), [
     "action",
     "limit",
+    "mode",
     "observed",
     "reason",
     "rung",
@@ -87,6 +88,23 @@ test("only known fields reach disk, whatever the caller passes", () => {
     "trigger",
     "v",
   ]);
+});
+
+test("mode and settling reach disk, or the CLI cannot tell a warning from a hypothetical", () => {
+  // The 0.6.0 lesson: `write` rebuilds each record from an explicit field list,
+  // so a field added to the type and to `toRecord` is still dropped on the floor
+  // unless it is added here too. That made the 0.5.0 fix inert in production
+  // while its unit tests passed. These assertions go through the real writer.
+  const file = join(tmp(), "trail.jsonl");
+  const r = new Recorder({ file, maxBytes: 1_000_000 }, makeLogger());
+  r.write(toRecord(T0, "a", "warn", "model_call_rate", 2, 2, "r", "model_call", "observe"));
+  r.write(toRecord(T0, "b", "warn", "model_call_rate", 2, 2, "r", "model_call", "enforce", true));
+
+  const [observed, settling] = parseTrail(readFileSync(file, "utf8"));
+  assert.equal(observed?.mode, "observe", "observe mode must reach disk");
+  assert.equal(observed?.settling, undefined, "a non-settling record stays clean");
+  assert.equal(settling?.mode, "enforce", "enforce mode must reach disk");
+  assert.equal(settling?.settling, true, "the settling flag must reach disk");
 });
 
 test("the schema version survives the writer, not just toRecord", () => {
@@ -98,12 +116,12 @@ test("the schema version survives the writer, not just toRecord", () => {
   // write-then-read round trip can catch that, so this test does one.
   const file = join(tmp(), "trail.jsonl");
   const r = new Recorder({ file, maxBytes: 1_000_000 }, makeLogger());
-  r.write(toRecord(T0, "main", "endRun", "spend_day", 3, 2, "over cap", "agent_run"));
+  r.write(toRecord(T0, "main", "endRun", "spend_day", 3, 2, "over cap", "agent_run", "enforce"));
 
   const onDisk = JSON.parse(readFileSync(file, "utf8").trim());
-  assert.equal(onDisk.v, 2, "the version must reach disk");
+  assert.equal(onDisk.v, 3, "the version must reach disk");
   assert.equal(onDisk.action, "ended");
-  assert.equal(parseTrail(readFileSync(file, "utf8"))[0]?.v, 2, "and survive parsing back");
+  assert.equal(parseTrail(readFileSync(file, "utf8"))[0]?.v, 3, "and survive parsing back");
 });
 
 test("the trail is written with restrictive permissions", () => {
@@ -149,7 +167,7 @@ test("a real trail round-trips through the file", () => {
   const file = join(tmp(), "trail.jsonl");
   const r = new Recorder({ file, maxBytes: 1_000_000 }, makeLogger());
   r.write(record);
-  r.write(toRecord(T0 + 1000, "gauntlet", "pause", "model_call_rate", 40, 30, "40 model calls in the last minute", "agent_run"));
+  r.write(toRecord(T0 + 1000, "gauntlet", "pause", "model_call_rate", 40, 30, "40 model calls in the last minute", "agent_run", "enforce"));
 
   const trail = parseTrail(readFileSync(file, "utf8"));
   assert.equal(trail.length, 2);
@@ -184,5 +202,5 @@ test("reaching the pause rung records an ended run, not a completed pause", () =
   // made. A trail claiming "paused" for an attempt that failed is the same
   // false claim the alerts used to make -- and the trail is the evidence an
   // operator reaches for afterwards, so it has to be true.
-  assert.equal(toRecord(T0, "s", "pause", "spend_day", 3, 2, "r", "agent_run").action, "ended");
+  assert.equal(toRecord(T0, "s", "pause", "spend_day", 3, 2, "r", "agent_run", "enforce").action, "ended");
 });

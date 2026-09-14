@@ -375,3 +375,50 @@ test("a pre-v2 record cannot prove enforcement", () => {
   assert.match(out, /pre-v2 record/);
   assert.doesNotMatch(out, /<- ended a run/);
 });
+
+// A `logged` record is written both by observe mode, where nothing would have
+// happened, and by enforce mode at the `warn` rung, where Belay really did warn
+// and really did send the alert. Rendering both as "would have warned"
+// understates a live guardrail as a hypothetical one -- the same family of
+// error as the enforcement overclaims fixed in 0.5.0-0.7.0, pointing the other
+// way. Found by driving a real enforce-mode agent on a production gateway.
+test("an enforce-mode warning is not reported as a hypothetical", () => {
+  const dir2 = mkdtempSync(join(tmpdir(), "belay-cli-mode-"));
+  const f = join(dir2, "trail.jsonl");
+  const base = {
+    t: new Date().toISOString(),
+    scope: "bot",
+    rung: "warn",
+    trigger: "model_call_rate",
+    observed: 2,
+    limit: 2,
+  };
+  writeFileSync(
+    f,
+    [
+      // v3, enforce: Belay warned. Not a hypothetical.
+      JSON.stringify({ ...base, reason: "2 model calls in the last minute", action: "logged", mode: "enforce", v: 3 }),
+      // v3, observe: nothing happened.
+      JSON.stringify({ ...base, scope: "obs", reason: "2 model calls in the last minute (observe mode: would have been warn)", action: "logged", mode: "observe", v: 3 }),
+      // v3, enforce but inside the settling window: also a hypothetical.
+      JSON.stringify({ ...base, scope: "settle", reason: "2 model calls in the last minute (settling after restart: would have been warn)", action: "logged", mode: "enforce", settling: true, v: 3 }),
+      // Pre-v3 enforce: no mode field, and no suffix, which only the
+      // escalation path in enforce mode produces.
+      JSON.stringify({ ...base, scope: "old", reason: "2 model calls in the last minute", action: "logged", v: 2 }),
+      // Pre-v3 observe: decidable from the suffix the engine always wrote.
+      JSON.stringify({ ...base, scope: "oldobs", reason: "2 model calls in the last minute (observe mode: would have been warn)", action: "logged", v: 2 }),
+    ].join("\n") + "\n",
+  );
+
+  const { out } = run(["incidents", "--hours", "1"], { BELAY_TRAIL_FILE: f });
+  const line = (scope: string) =>
+    out.split("\n").find((l) => l.includes(` ${scope}`) && !l.startsWith(" ")) ?? "";
+
+  assert.match(line("bot"), /\bwarned\b/, "enforce mode warned");
+  assert.doesNotMatch(line("bot"), /would have/, "and did not merely 'would have'");
+  assert.match(line("obs"), /would have warned/, "observe mode is hypothetical");
+  assert.match(line("settle"), /would have warned \(settling after restart\)/);
+  assert.match(line("old"), /\bwarned\b/, "pre-v3 enforce is still decidable");
+  assert.doesNotMatch(line("old"), /would have/);
+  assert.match(line("oldobs"), /would have warned/, "pre-v3 observe from its suffix");
+});

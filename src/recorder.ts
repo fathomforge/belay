@@ -42,10 +42,33 @@ export type Record = {
    */
   action: "logged" | "escalated" | "blocked" | "ended" | "paused";
   /**
+   * The enforcement mode in force when this decision was taken.
+   *
+   * `action: "logged"` is written both by observe mode, where nothing would
+   * have happened, and by enforce mode at the `warn` rung, where Belay really
+   * did warn and really did alert -- warning simply blocks nothing. Those are
+   * different facts, and until v3 the only thing separating them was a suffix
+   * inside the free-text `reason`. The CLI reasons on structured fields, so it
+   * could not tell them apart and labelled every `logged` record "would have
+   * warned" -- understating a live guardrail as a hypothetical one.
+   *
+   * Absent on records written by <= 0.7.1.
+   */
+  mode?: "enforce" | "observe";
+  /**
+   * True when the decision fell inside `settleAfterRestartMs`, where enforce
+   * mode deliberately behaves like observe. Structured for the same reason as
+   * `mode`: a reader must not have to parse prose to know what happened.
+   */
+  settling?: boolean;
+  /**
    * Record schema version. Absent on records written by <= 0.4.0, whose
    * `action` was derived from the rung alone and so may claim enforcement that
    * never occurred. Readers should treat an unversioned `blocked`/`ended` as
    * unverified rather than as evidence.
+   *
+   * v3 adds `mode` and `settling`; a `logged` record without them cannot be
+   * said to be hypothetical or real, and readers should say so rather than guess.
    */
   v?: number;
 };
@@ -106,6 +129,8 @@ export class Recorder {
         limit: record.limit,
         reason: record.reason,
         action: record.action,
+        mode: record.mode,
+        settling: record.settling,
         v: record.v,
       });
       appendFileSync(this.config.file, `${line}\n`, { mode: 0o600 });
@@ -185,6 +210,8 @@ export function toRecord(
   limit: number,
   reason: string,
   surface: RecordSurface,
+  mode: "enforce" | "observe",
+  settling = false,
 ): Record {
   // A blocking rung records "ended", never "paused": whether the account also
   // stopped is not known until the gateway answers, and a trail that claims a
@@ -199,7 +226,9 @@ export function toRecord(
     limit,
     reason,
     action: actionFor(surface, rung),
-    v: 2,
+    mode,
+    ...(settling ? { settling: true } : {}),
+    v: 3,
   };
 }
 

@@ -184,12 +184,19 @@ export function createBelay(
   /** One outcome record per (scope, surface, rung) until the ladder moves. */
   const outcomeRecorded = new Set<string>();
 
-  function assess(ctx: AgentCtx, surface: Surface): { rung: RungName; reason: string } | undefined {
+  function assess(
+    ctx: AgentCtx,
+    surface: Surface,
+    // `model_call_ended` carries its own runId, and the meter records that
+    // call's bytes against it. Assessing under a different key would read a
+    // different run's counter and quietly measure nothing.
+    eventRunId?: string,
+  ): { rung: RungName; reason: string } | undefined {
     const at = now();
     const scope = meter.scope(ctx.agentId, ctx.sessionKey);
     const agentId = agentIdOf(ctx);
     const limits = limitsFor(config, agentId);
-    const snapshot = scope.snapshot(at, runKeyOf(ctx));
+    const snapshot = scope.snapshot(at, runKeyOf(ctx, eventRunId));
 
     // Tell the operator once per scope if their spend caps are only partial.
     if (spendCapsAreBlind(snapshot, limits) && !blindnessReported.has(scope.key)) {
@@ -247,7 +254,18 @@ export function createBelay(
         if (!outcomeRecorded.has(key)) {
           outcomeRecorded.add(key);
           effects.recorder?.write(
-            toRecord(at, scope.key, rung, worst.trigger, worst.observed, worst.limit, worst.reason, surface),
+            toRecord(
+              at,
+              scope.key,
+              rung,
+              worst.trigger,
+              worst.observed,
+              worst.limit,
+              worst.reason,
+              surface,
+              observing ? "observe" : "enforce",
+              settling,
+            ),
           );
           // The alert comes from here too, not from the escalation block below:
           // that block is gated on `step.isNew`, so at the ceiling the one
@@ -290,6 +308,8 @@ export function createBelay(
             // The surface decides what the record may claim: a notification
             // hook cannot have blocked or ended anything.
             surface,
+            observing ? "observe" : "enforce",
+            settling,
           ),
         );
 
@@ -439,6 +459,15 @@ export function createBelay(
       meter
         .scope(ctx.agentId, ctx.sessionKey)
         .recordRequestBytes(now(), runKey, event.requestPayloadBytes ?? 0);
+      // Assess here, not only at `model_call_started`. This is the first moment
+      // the run's byte total includes the call that just finished, and for a run
+      // with a single model call it is the *only* moment: the started hook saw
+      // zero, and the per-run counter dies with the run. Before this, one
+      // enormous request could never breach `requestBytesPerRun`.
+      //
+      // Must run before the estimation short-circuit below: byte limits are
+      // measured exactly and do not depend on estimation being enabled.
+      assess(ctx, "model_call", event.runId);
       if (!config.estimation.enabled) return;
       const callKey = pendingKey(runKey, event.provider, event.model);
       // If llm_output already reported no usage for this call, complete the pair

@@ -5,6 +5,48 @@ All notable changes to Belay are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-13
+
+Found by deploying 0.7.1 to a production gateway and driving a real agent into real breaches.
+Both defects were invisible to 277 passing tests, because both need a *live* agent to surface:
+one needs an agent in enforce mode at the warn rung, the other needs a run with exactly one model
+call.
+
+### Fixed
+
+- **A run with a single model call was never measured against `requestBytesPerRun`.** Request
+  bytes are only known when a call *ends*, but the sole assessment happened at
+  `model_call_started` — when the run's byte total was still zero — and the `model_call` surface
+  did not permit the `request_bytes_run` trigger at all. The per-run cap therefore fired only on
+  the second and later calls of a multi-call run, and one enormous request sailed past any cap.
+  That is the shape of the failover-context incident this project exists to catch. On the
+  production gateway, five turns of 125 kB each against a **1 kB** cap produced no breach
+  whatsoever. `model_call_ended` now assesses after recording bytes, before the estimation
+  short-circuit, and under the run id the bytes were recorded against.
+- **`belay incidents` reported an enforcing agent's warning as a hypothetical.** `action: "logged"`
+  is written both by observe mode, where nothing would have happened, and by enforce mode at the
+  `warn` rung, where Belay really did warn and really did send the alert — warning blocks nothing
+  by design. The only thing separating them was a suffix inside the free-text `reason`, and the CLI
+  reasons on structured fields, so it printed "would have warned" for both. This is the same family
+  as the enforcement overclaims fixed in 0.5.0–0.7.0, pointing the other way: understating a live
+  guardrail as a hypothetical one.
+
+### Added
+
+- **Records carry `mode` and `settling`** at `v: 3`, so a reader never has to parse prose to know
+  whether a decision was real. Both were added to the writer's explicit field allowlist — the line
+  where the 0.6.0 fix went inert — with a test that goes through the real writer to disk.
+- Integration tests for the single-call run, for the byte cap's independence from `estimation`,
+  and for the enforce/observe/settling/pre-v3 label matrix. Tests 9 and 10 fail without the fix.
+
+### Documented
+
+- **A per-run byte cap detects but cannot contain.** Enforcement acts on a breach that is still
+  standing, and a per-run counter dies with its run, so a sequence of oversized single-call runs
+  alerts every time and is refused never. Containment across runs needs `requestBytesPerMinute` or
+  `requestBytesPerDay`. The README now says so where the limits are chosen, and an integration test
+  pins both halves rather than letting the stronger claim stand unchallenged.
+
 ## [0.7.1] - 2026-09-13
 
 Packaging only; no behaviour change.
