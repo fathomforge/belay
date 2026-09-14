@@ -24,8 +24,13 @@ Your agent doesn't get killed. It gets caught. Enforcement lands between calls, 
 OpenClaw has no spend cap, no model-call rate limit, no cross-session budget, and no graceful
 pause. The default agent runtime timeout is **48 hours**. Built-in loop detection is off by
 default, tool-only, and single-run. Both upstream requests for spending controls were closed as
-"not planned" — including one from an operator who lost **$169 in a single session** when a
-failover re-sent a 517K-token context down a chain of pricier models.
+"not planned": [#27442](https://github.com/openclaw/openclaw/issues/27442), an RFC for
+plugin-level cross-session budgets and circuit breakers, and
+[#38248](https://github.com/openclaw/openclaw/issues/38248), a per-hour spending ceiling. The
+operator who filed #38248 lost **$169 in a single session** — 6,000 requests, 296M tokens — when a
+rate-limit event sent a 517K-token context down a failover chain of pricier models, with no
+visibility until the balance hit $0.02. The nearest live thread,
+[#9912](https://github.com/openclaw/openclaw/issues/9912), has been open since February 2026.
 
 Meanwhile the failure modes are mundane and recurring: an agent invents a task and loops on it, a
 hallucinated URL 404s and gets retried 700 times, an hourly heartbeat quietly reprocesses a 174K
@@ -536,6 +541,73 @@ Metering, enforcement, tool blocking, run-ending and the flight recorder have al
 against a live gateway, not only in tests. The `channels.stop` pause rung was exercised too — and
 **refused by the gateway**, which is how the limitation above was found. It is documented as not
 working rather than listed as verified.
+
+## Questions people actually ask
+
+### Does OpenClaw have a built-in spend cap?
+
+No. There is no spend cap, no model-call rate limit and no cross-session budget. What it does have
+is a **48-hour** default agent runtime timeout and loop detection that is off by default, tool-only
+and single-run — none of which bound cost. Both requests for spending controls were closed as "not
+planned": [#27442](https://github.com/openclaw/openclaw/issues/27442) (cross-session budgets and
+circuit breakers) and [#38248](https://github.com/openclaw/openclaw/issues/38248) (a per-hour
+ceiling). Your *provider* may offer a hard billing cap, and you should set one regardless of
+whether you use Belay.
+
+### How do I set a daily spend limit on an OpenClaw agent?
+
+Install Belay, start in `observe` mode, then set `limits.spendPerDayUsd` (and optionally
+`spendPerHourUsd`, `spendPerRunUsd`) in the plugin config. Per-agent overrides go under `agents`:
+
+```json
+{ "mode": "enforce",
+  "limits": { "spendPerDayUsd": 5 },
+  "agents": { "my-group-bot": { "spendPerDayUsd": 1 } } }
+```
+
+An unset limit is never enforced and is never treated as zero. See [Configuration](#configuration).
+
+### How do I stop an agent stuck in a retry loop?
+
+The retry-loop signature is the same call repeated, so `limits.identicalToolCalls` is the direct
+answer, with `toolErrorsPerMinute` for error storms. Both are counted exactly and need no usage
+reporting from your provider. A loop that never calls a tool is caught by `modelCallsPerMinute`
+instead, which is on by default.
+
+### Will this cap my bill?
+
+No, and nothing that runs inside the gateway can. Belay checks limits when a hook fires, so the
+call that crosses the line still completes, and a burst can put several calls in flight between two
+checks. It bounds **how far a breach runs**, not what the breach in progress costs. For a hard
+ceiling, use your provider's own spend limits — see
+[Where enforcement actually lands](#where-enforcement-actually-lands).
+
+### My provider reports no token usage. Do spend caps still work?
+
+Only if you turn on estimation (`"estimation": { "enabled": true }`), which prices from request
+size and is off by default. Treat estimated figures as the right order of magnitude and nothing
+finer — measured error ran from −60% to +125%. **Rate limits need no usage reporting at all** and
+are exact on every provider, and they are what catch a runaway loop. See
+[When your provider reports no token usage](#when-your-provider-reports-no-token-usage).
+
+### How is this different from OpenClaw's built-in loop detection?
+
+Built-in detection is off by default, looks only at tool calls, and resets every run. Belay meters
+across runs and across sessions, covers model calls as well as tool calls, adds spend and
+request-size limits, and escalates gradually instead of doing nothing until it does everything.
+
+### Can Belay read my prompts or conversations?
+
+No. It reads usage numbers and call metadata — for estimation, two integers of transport size, never
+content. The flight recorder stores decisions, not transcripts. There is no telemetry and no network
+call except to alert endpoints you configure yourself. See
+[What Belay can and cannot see](#what-belay-can-and-cannot-see).
+
+### Will it start blocking my agents the moment I install it?
+
+No. Defaults are deliberately timid: no spend cap is enabled out of the box, rate limits ship well
+above any sane workload, and account pausing is off. Start in `observe` mode, watch what it would
+have done, then switch to `enforce`.
 
 ## Requirements
 
