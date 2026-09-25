@@ -5,6 +5,17 @@ All notable changes to Belay are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- CI: the CLI smoke test asserted "No incidents" for a missing trail, the exact claim 0.2.0 stopped
+  the CLI making, so CI had failed on every push since. It now pins both halves: a missing trail is
+  `unknown` with exit 2, and only an empty trail that exists is "No incidents".
+- CI: `actions/checkout` and `actions/setup-node` moved from v4 (deprecated Node 20 runtime) to v7,
+  pinned to commit SHAs rather than movable tags. The release job no longer restores an npm cache,
+  since it holds the publish token and mints the provenance id-token.
+
 ## [0.8.0] - 2026-09-13
 
 Found by deploying 0.7.1 to a production gateway and driving a real agent into real breaches.

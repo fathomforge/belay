@@ -19,8 +19,8 @@ jobs:
       matrix:
         node: ["22", "24"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -42,8 +42,8 @@ jobs:
       matrix:
         node: ["20", "22", "24"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -61,16 +61,29 @@ jobs:
           "
 
       - name: The CLI runs
+        # A missing trail must read as "unknown" with exit 2, never as a clean
+        # bill of health; only an empty trail that exists may say "No incidents".
         run: |
           node bin/belay.mjs --help > /dev/null
-          node bin/belay.mjs incidents --trail /nonexistent.jsonl | grep -q "No incidents"
+
+          code=0
+          out=$(node bin/belay.mjs incidents --trail /nonexistent.jsonl) || code=$?
+          test "$code" -eq 2
+          grep -q "unknown" <<< "$out"
+          if grep -q "No incidents" <<< "$out"; then
+            echo "missing trail was reported as clean"; exit 1
+          fi
+
+          : > "$RUNNER_TEMP/empty.jsonl"
+          out=$(node bin/belay.mjs incidents --trail "$RUNNER_TEMP/empty.jsonl")
+          grep -q "No incidents" <<< "$out"
           echo "bin/belay.mjs runs on node $(node -v)"
 
   supply-chain:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
@@ -109,10 +122,10 @@ jobs:
   secrets:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
       # The same guard that runs on every local commit, run again over the whole
